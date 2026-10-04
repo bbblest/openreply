@@ -1,0 +1,9 @@
+# Deployment secrets are managed with Vercel environment variables.
+.env
+.env.*
+.vercel
+.git
+node_modules
+.next
+coverage
+*.tsbuildinfo
