@@ -60,6 +60,15 @@ interface LoadedCampaign {
 interface CampaignBuilderProps {
   mode: "new" | "edit";
   campaignId?: string;
+  followPolicy: {
+    required: boolean;
+    messages: {
+      publicReply: string;
+      opening: string;
+      prompt: string;
+      button: string;
+    };
+  };
 }
 
 function Section({
@@ -109,14 +118,19 @@ function Radio({
 function Toggle({
   on,
   onToggle,
+  disabled = false,
 }: {
   on: boolean;
   onToggle: () => void;
+  disabled?: boolean;
 }) {
   return (
     <button
       type="button"
       onClick={onToggle}
+      role="switch"
+      aria-checked={on}
+      disabled={disabled}
       className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${
         on ? "bg-accent" : "bg-zinc-300"
       }`}
@@ -130,7 +144,7 @@ function Toggle({
   );
 }
 
-export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderProps) {
+export default function CampaignBuilder({ mode, campaignId, followPolicy }: CampaignBuilderProps) {
   const { t } = useI18n();
   const router = useRouter();
 
@@ -162,11 +176,11 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
   const [dmTriggerEnabled, setDmTriggerEnabled] = useState(false);
 
   const [publicReplyEnabled, setPublicReplyEnabled] = useState(false);
-  const [publicReplyMessages, setPublicReplyMessages] = useState<string[]>([""]);
+  const [customPublicReplyMessages, setPublicReplyMessages] = useState<string[]>([""]);
 
   const [openingDmEnabled, setOpeningDmEnabled] = useState(false);
-  const [openingDmMessage, setOpeningDmMessage] = useState("");
-  const [openingDmButtonLabel, setOpeningDmButtonLabel] = useState("");
+  const [customOpeningDmMessage, setOpeningDmMessage] = useState("");
+  const [customOpeningDmButtonLabel, setOpeningDmButtonLabel] = useState("");
 
   const [dmMessage, setDmMessage] = useState("");
   const [linkOpen, setLinkOpen] = useState(false);
@@ -175,13 +189,32 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
   const [secondLinkOpen, setSecondLinkOpen] = useState(false);
   const [secondaryDestinationUrl, setSecondaryDestinationUrl] = useState("");
   const [secondaryButtonLabel, setSecondaryButtonLabel] = useState("Open link");
-  const [requireFollow, setRequireFollow] = useState(false);
-  const [followPromptMessage, setFollowPromptMessage] = useState("");
-  const [followPromptButtonLabel, setFollowPromptButtonLabel] =
+  const [customRequireFollow, setRequireFollow] = useState(false);
+  const [customFollowPromptMessage, setFollowPromptMessage] = useState("");
+  const [customFollowPromptButtonLabel, setFollowPromptButtonLabel] =
     useState("i'm following");
   const [followUpEnabled, setFollowUpEnabled] = useState(false);
   const [followUpMessage, setFollowUpMessage] = useState("");
   const [followUpDelayMinutes, setFollowUpDelayMinutes] = useState(0);
+
+  // Server policy applies equally to form values, validation, payload, and preview.
+  // Loading an old campaign or CSV row must not restore pre-verification gifts.
+  const requireFollow = followPolicy.required || customRequireFollow;
+  const publicReplyMessages = followPolicy.required
+    ? [followPolicy.messages.publicReply]
+    : customPublicReplyMessages;
+  const openingDmMessage = followPolicy.required
+    ? followPolicy.messages.opening
+    : customOpeningDmMessage;
+  const openingDmButtonLabel = followPolicy.required
+    ? followPolicy.messages.button
+    : customOpeningDmButtonLabel;
+  const followPromptMessage = followPolicy.required
+    ? followPolicy.messages.prompt
+    : customFollowPromptMessage;
+  const followPromptButtonLabel = followPolicy.required
+    ? followPolicy.messages.button
+    : customFollowPromptButtonLabel;
 
   const [previewTab, setPreviewTab] = useState<PreviewTab>("dm");
 
@@ -755,6 +788,7 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
                 <div key={i} className="flex items-center gap-2">
                   <input
                     value={msg}
+                    readOnly={followPolicy.required}
                     onChange={(e) =>
                       setPublicReplyMessages((prev) =>
                         prev.map((m, idx) => (idx === i ? e.target.value : m))
@@ -764,7 +798,7 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
                     maxLength={1000}
                     className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-foreground placeholder:text-zinc-500 focus:border-accent/40 focus:outline-none"
                   />
-                  {publicReplyMessages.length > 1 && (
+                  {!followPolicy.required && publicReplyMessages.length > 1 && (
                     <button
                       type="button"
                       onClick={() =>
@@ -780,7 +814,7 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
                   )}
                 </div>
               ))}
-              {publicReplyMessages.length < 10 && (
+              {!followPolicy.required && publicReplyMessages.length < 10 && (
                 <button
                   type="button"
                   onClick={() =>
@@ -791,9 +825,11 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
                   {t("+ Add another reply")}
                 </button>
               )}
-              <p className="text-xs text-muted">
-                {t("One is picked at random each time, so replies don't look identical.")}
-              </p>
+              {!followPolicy.required && (
+                <p className="text-xs text-muted">
+                  {t("One is picked at random each time, so replies don't look identical.")}
+                </p>
+              )}
             </div>
           )}
         </Section>
@@ -811,6 +847,7 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
               <div className="mt-3 space-y-2">
                 <textarea
                   value={openingDmMessage}
+                  readOnly={followPolicy.required}
                   onChange={(e) => setOpeningDmMessage(e.target.value)}
                   placeholder={t("Hey there! I'm so happy you're here 😊")}
                   rows={3}
@@ -819,6 +856,7 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
                 />
                 <input
                   value={openingDmButtonLabel}
+                  readOnly={followPolicy.required}
                   onChange={(e) => setOpeningDmButtonLabel(e.target.value)}
                   placeholder={t("Send me the link")}
                   className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-foreground placeholder:text-zinc-500 focus:border-accent/40 focus:outline-none"
@@ -835,12 +873,14 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
               <Toggle
                 on={requireFollow}
                 onToggle={() => setRequireFollow(!requireFollow)}
+                disabled={followPolicy.required}
               />
             </div>
             {requireFollow && (
               <div className="mt-3 space-y-2">
                 <textarea
                   value={followPromptMessage}
+                  readOnly={followPolicy.required}
                   onChange={(e) => setFollowPromptMessage(e.target.value)}
                   placeholder={t("quick favor before i send your link. i don't make any money from this, it's free. if you want to support me, just don't unfollow after, and star the repo on github if it helps you. tap the button once you're following and i'll send it over")}
                   rows={3}
@@ -849,14 +889,20 @@ export default function CampaignBuilder({ mode, campaignId }: CampaignBuilderPro
                 />
                 <input
                   value={followPromptButtonLabel}
+                  readOnly={followPolicy.required}
                   onChange={(e) => setFollowPromptButtonLabel(e.target.value)}
                   placeholder={t("i'm following")}
                   className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-foreground placeholder:text-zinc-500 focus:border-accent/40 focus:outline-none"
                   maxLength={20}
                 />
                 <p className="text-xs text-muted">
-                  {t("We send the link only after they tap the button and Instagram confirms the follow. If it can't be verified, we send it anyway.")}
+                  {t("We send the gift and link only after Instagram confirms the follow. If they are not following or verification is unavailable, the gift is not sent.")}
                 </p>
+                {followPolicy.required && (
+                  <p className="text-xs text-muted">
+                    {t("Follow verification is required for every campaign. Messages before verification are fixed; edit your gift content below.")}
+                  </p>
+                )}
               </div>
             )}
           </div>

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/db/client";
+import { deploymentFollowOverrides } from "@/lib/instagram/follow-policy";
 import { getWorkspaceInstagramAccount } from "@/lib/instagram-accounts";
 import { generateReportShareSlug } from "@/lib/reports/share";
 import { generateTrackedLinkSlug } from "@/lib/tracking/server";
@@ -103,6 +104,7 @@ export async function POST(request: NextRequest) {
         workspaceId: context.workspaceId,
         instagramAccountId: account.id,
         reportShareSlug: generateReportShareSlug(),
+        ...deploymentFollowOverrides(),
         ...(validTrackedUrl
           ? {
               trackedLinks: {

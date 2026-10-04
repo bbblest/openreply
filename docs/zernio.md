@@ -34,7 +34,7 @@ There is one saved Zernio connection and selected profile per workspace. Existin
 | Post picker | Shows the **latest 25 posts**. Older posts are not available through this picker. |
 | Post reporting and analytics | Require Zernio’s **analytics add-on** and synced data. Missing data is not evidence of zero activity. |
 | Follower count snapshots | Can be **up to 24 hours old**. They are reporting snapshots, not live follower checks. |
-| Follow gate | Uses follower status when available. Unknown remains unknown and the existing fail-open behavior is preserved. |
+| Follow gate | Only a confirmed `true` follower status releases gated content. Unknown, non-follower and lookup failures withhold the gift; a button tap triggers verification rather than bypassing it. |
 | Inbox | Opening conversations and sending replies are supported. A preview is omitted when the API does not provide message direction; this does not mean the thread is empty. |
 | Token refresh | Zernio handles its platform credentials. OpenReply’s direct Meta token refresh does not run on Zernio accounts. |
 

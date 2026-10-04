@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { getCurrentWorkspaceId } from "@/lib/auth";
 import { prisma } from "@/lib/db/client";
+import { deploymentFollowOverrides } from "@/lib/instagram/follow-policy";
 import { calculateCtr, normalizeTopKeywords } from "@/lib/tracking/analytics";
 import { buildTrackedUrl } from "@/lib/tracking/message";
 import { TRACKED_LINK_ORDER } from "@/lib/tracking/link-order";
@@ -261,6 +262,7 @@ export async function GET(request: NextRequest) {
 
       return {
         ...automation,
+        ...deploymentFollowOverrides(),
         trackedLinks: automation.trackedLinks.map((link) => ({
           ...link,
           trackedUrl: buildTrackedUrl(link.slug),
@@ -413,6 +415,7 @@ export async function POST(request: NextRequest) {
       workspaceId,
       instagramAccountId: instagramAccount.id,
       reportShareSlug: generateReportShareSlug(),
+      ...deploymentFollowOverrides(),
       ...(linkCreates.length > 0
         ? { trackedLinks: { create: linkCreates } }
         : {}),
@@ -525,7 +528,7 @@ export async function PATCH(request: NextRequest) {
   const updated = await prisma.$transaction(async (tx) => {
     const campaign = await tx.automation.update({
       where: { id: automationId },
-      data: automationData,
+      data: { ...automationData, ...deploymentFollowOverrides() },
     });
 
     await syncCampaignLinks(tx, {

@@ -53,10 +53,15 @@ import {
 import { TRACKED_LINK_ORDER } from "@/lib/tracking/link-order";
 
 import { ZernioApiError } from "@/lib/zernio/client";
+import {
+  isFollowRequiredByDeployment,
+  requireConfirmedFollow,
+  SAFE_FOLLOW_MESSAGES,
+} from "@/lib/instagram/follow-policy";
 
 const BACKOFF_DELAYS = [5 * 60 * 1000, 15 * 60 * 1000, 45 * 60 * 1000];
 
-// How long to wait before re-checking a follow that came back false: one
+// How long to wait before re-checking an unconfirmed follow: one
 // delay per re-check, each counted from the previous check.
 //
 // `is_user_follow_business` does not reflect a brand-new follow right away, and
@@ -107,6 +112,20 @@ function formatError(error: unknown): string {
     return error.message;
   }
   return "Unknown error";
+}
+
+// An unavailable lookup is not evidence of a follow. Normalize provider
+// failures to unknown so every entry point withholds the gift consistently.
+async function readFollowStatus(
+  args: Parameters<typeof getUserFollowStatus>[0]
+): Promise<boolean | null> {
+  try {
+    const status = await getUserFollowStatus(args);
+    return typeof status === "boolean" ? status : null;
+  } catch {
+    console.warn("[DM Worker] Follow status unavailable; gift withheld");
+    return null;
+  }
 }
 
 // Meta rejections that a plain-text retry cannot fix: the send was refused for
@@ -450,7 +469,9 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
     ) {
       try {
         const chosen = replyPool[Math.floor(Math.random() * replyPool.length)];
-        const publicReply = renderMessageWithTracking({
+        const publicReply = isFollowRequiredByDeployment()
+          ? SAFE_FOLLOW_MESSAGES.publicReply
+          : renderMessageWithTracking({
           message: chosen,
           commenterName,
           trackedLinks: automation.trackedLinks,
@@ -627,15 +648,12 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
     // status at comment time: confirmed followers get the link now, everyone
     // else gets the "follow me first" prompt (re-verified on tap).
     let sendFollowPrompt = false;
-    if (automation.requireFollow && !useOpeningDm) {
-      const alreadyFollows = await getUserFollowStatus({
+    if (requireConfirmedFollow(automation) && !useOpeningDm) {
+      const alreadyFollows = await readFollowStatus({
         context: accessToken,
         recipientId: commenterId,
       });
-      sendFollowPrompt =
-        accessToken.provider === "ZERNIO"
-          ? alreadyFollows === false
-          : alreadyFollows !== true;
+      sendFollowPrompt = alreadyFollows !== true;
     }
 
     let claimed;
@@ -654,7 +672,9 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
     let delivered = false;
     try {
       if (useOpeningDm) {
-        const openingText = renderMessageWithTracking({
+        const openingText = isFollowRequiredByDeployment()
+          ? SAFE_FOLLOW_MESSAGES.opening
+          : renderMessageWithTracking({
           message: automation.openingDmMessage as string,
           commenterName,
           trackedLinks: [],
@@ -664,14 +684,18 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
           instagramAccountId: automation.instagramAccount.instagramId,
           commentId: commentId,
           text: openingText,
-          buttonTitle: automation.openingDmButtonLabel as string,
+          buttonTitle: isFollowRequiredByDeployment()
+            ? SAFE_FOLLOW_MESSAGES.button
+            : automation.openingDmButtonLabel as string,
           // The ":open" marker tells a tap here apart from the follow prompt's
           // own "I'm following" button, which sends the same prefix.
-          payload: `${automation.requireFollow ? "followcheck" : "reveal"}:${automation.id}:open`,
+          payload: `${requireConfirmedFollow(automation) ? "followcheck" : "reveal"}:${automation.id}:open`,
           postId: mediaId,
         });
       } else if (sendFollowPrompt) {
-        const promptText = renderMessageWithoutLink({
+        const promptText = isFollowRequiredByDeployment()
+          ? SAFE_FOLLOW_MESSAGES.prompt
+          : renderMessageWithoutLink({
           message:
             automation.followPromptMessage ||
             "quick favor before i send your link. i don't make any money from this, it's free. if you want to support me, just don't unfollow after, and star the repo on github if it helps you. tap the button once you're following and i'll send it over",
@@ -682,7 +706,9 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
           instagramAccountId: automation.instagramAccount.instagramId,
           commentId: commentId,
           text: promptText,
-          buttonTitle: automation.followPromptButtonLabel || "i'm following",
+          buttonTitle: isFollowRequiredByDeployment()
+            ? SAFE_FOLLOW_MESSAGES.button
+            : automation.followPromptButtonLabel || "i'm following",
           payload: `followcheck:${automation.id}`,
           postId: mediaId,
         });
@@ -836,7 +862,9 @@ async function sendFollowRecheckAck({
   userId: string;
   operationId: string;
 }): Promise<void> {
-  const message = process.env.FOLLOW_RECHECK_ACK_MESSAGE?.trim();
+  const message = isFollowRequiredByDeployment()
+    ? SAFE_FOLLOW_MESSAGES.acknowledgement
+    : process.env.FOLLOW_RECHECK_ACK_MESSAGE?.trim();
   if (!message) return;
   try {
     // One acknowledgement per re-check cycle: a burst of taps collapses into a
@@ -947,14 +975,10 @@ async function processPostback(job: Job<ProcessPostbackJob>): Promise<void> {
     ]))
     .digest("hex");
 
-  // Follow-gate: before revealing the link, verify the user follows. On a
-  // `followcheck:` tap a non-follower gets the prompt again (no quota spent);
-  // on a read fallback a non-follower is silently skipped — the gate must not
-  // be bypassable by just reading the DM and waiting. On a tap, following or
-  // unverifiable (null) falls through and delivers the link — fail-open so a
-  // real follower is never trapped.
-  if ((isFollowCheck || fallback) && automation.requireFollow) {
-    const follows = await getUserFollowStatus({
+  // Check every reveal, including legacy reveal: buttons and read fallbacks.
+  // A button tap is a request to verify, never proof that the user follows.
+  if (requireConfirmedFollow(automation)) {
+    const follows = await readFollowStatus({
       context: accessToken,
       recipientId: userId,
     });
@@ -963,16 +987,14 @@ async function processPostback(job: Job<ProcessPostbackJob>): Promise<void> {
     // "User consent is required", i.e. null), so failing open here handed the
     // link to anyone who read the opening DM and waited, follower or not.
     if (fallback && follows !== true) return;
-    if (follows === false) {
-      if (fallback) return;
+    if (follows !== true) {
 
       // A tap on an opening-DM button is not a claim to follow — most people
       // who tap it simply don't follow yet — so they get the follow prompt
       // right away. Only the prompt's own button earns the delayed re-check;
       // holding an opening tap for it left people staring at a silent chat.
       if (!fromOpeningDm) {
-        // A `false` on a button tap: give the follow time to register and look
-        // again, rather than rejecting someone who just followed.
+        // Give a new follow or temporarily unavailable status time to resolve.
         //
         // The job id is bucketed by the recheck window, not fixed per user.
         // BullMQ keeps completed jobs (removeOnComplete: count 1000) and silently
@@ -1012,10 +1034,8 @@ async function processPostback(job: Job<ProcessPostbackJob>): Promise<void> {
           return;
         }
 
-        // Last `false`: they are genuinely not following. Record it — this
-        // branch used to return without writing anything at all, so a gate that
-        // turned people away left no trace and its rejection rate could not be
-        // measured, only guessed at from complaints.
+        // Record why verification did not pass without treating unknown as
+        // proof of non-following. No gift is released in either case.
         await prisma.operationalEvent
           .create({
             data: {
@@ -1028,13 +1048,18 @@ async function processPostback(job: Job<ProcessPostbackJob>): Promise<void> {
                 automationName: automation.name,
                 userId,
                 commenterName,
+                followStatus: follows === false ? "not_following" : "unknown",
               },
             },
           })
           .catch(() => {});
       }
 
-      const promptText = renderMessageWithoutLink({
+      const promptText = isFollowRequiredByDeployment()
+        ? (follows === null ? SAFE_FOLLOW_MESSAGES.unknown : SAFE_FOLLOW_MESSAGES.prompt)
+        : follows === null
+          ? "We couldn't confirm your follow yet. Please send a message in this chat, wait a moment, and tap the button to check again. Your gift has not been sent."
+          : renderMessageWithoutLink({
         message:
           automation.followPromptMessage ||
           "quick favor before i send your link. i don't make any money from this, it's free. if you want to support me, just don't unfollow after, and star the repo on github if it helps you. tap the button once you're following and i'll send it over",
@@ -1049,8 +1074,9 @@ async function processPostback(job: Job<ProcessPostbackJob>): Promise<void> {
               instagramAccountId: automation.instagramAccount.instagramId,
               userId: userId,
               text: promptText,
-              buttonTitle:
-                automation.followPromptButtonLabel || "i'm following",
+              buttonTitle: isFollowRequiredByDeployment()
+                ? SAFE_FOLLOW_MESSAGES.button
+                : automation.followPromptButtonLabel || "i'm following",
               payload: `followcheck:${automation.id}`,
             }),
         });
@@ -1234,6 +1260,11 @@ async function processFollowUp(job: Job<ProcessFollowUpJob>): Promise<void> {
     return;
   }
 
+  if (requireConfirmedFollow(automation)) {
+    const follows = await readFollowStatus({ context: accessToken, recipientId: userId });
+    if (follows !== true) return;
+  }
+
   try {
     await sendDirectMessage({
       context: accessToken,
@@ -1381,21 +1412,14 @@ async function processMessage(job: Job<ProcessMessageJob>): Promise<void> {
 
     // Follow gate: anyone not confirmed as a follower gets the prompt instead of
     // the link, with the same `followcheck:` button that re-verifies on tap.
-    // `null` (unverifiable) prompts too — this is first contact, exactly like a
-    // comment, so it follows processComment's fail-closed rule rather than the
-    // postback path's fail-open one. Fail-open is only safe after a tap, where
-    // the user has already claimed to follow; here it would hand the link to
-    // anyone whose status the API happens not to resolve.
+    // Unknown and failed lookups withhold gifts, exactly like every other path.
     let sendFollowPrompt = false;
-    if (automation.requireFollow) {
-      const follows = await getUserFollowStatus({
+    if (requireConfirmedFollow(automation)) {
+      const follows = await readFollowStatus({
         context: accessToken,
         recipientId: senderId,
       });
-      sendFollowPrompt =
-        accessToken.provider === "ZERNIO"
-          ? follows === false
-          : follows !== true;
+      sendFollowPrompt = follows !== true;
     }
 
     const usage = await reserveWorkspaceDMSend(automation.workspaceId);
@@ -1422,7 +1446,9 @@ async function processMessage(job: Job<ProcessMessageJob>): Promise<void> {
 
     try {
       if (sendFollowPrompt) {
-        const promptText = renderMessageWithoutLink({
+        const promptText = isFollowRequiredByDeployment()
+          ? SAFE_FOLLOW_MESSAGES.prompt
+          : renderMessageWithoutLink({
           message:
             automation.followPromptMessage ||
             "Almost there! Follow me and tap the button below to grab your link 💛",
@@ -1433,7 +1459,9 @@ async function processMessage(job: Job<ProcessMessageJob>): Promise<void> {
           instagramAccountId: automation.instagramAccount.instagramId,
           userId: senderId,
           text: promptText,
-          buttonTitle: automation.followPromptButtonLabel || "I'm following ✅",
+          buttonTitle: isFollowRequiredByDeployment()
+            ? SAFE_FOLLOW_MESSAGES.button
+            : automation.followPromptButtonLabel || "I'm following ✅",
           payload: `followcheck:${automation.id}`,
         });
       } else {

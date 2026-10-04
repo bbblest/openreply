@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/db/client";
+import { deploymentFollowOverrides } from "@/lib/instagram/follow-policy";
 import { generateReportShareSlug } from "@/lib/reports/share";
 import { TRACKED_LINK_ORDER } from "@/lib/tracking/link-order";
 import { generateTrackedLinkSlug } from "@/lib/tracking/server";
@@ -55,6 +56,7 @@ export async function duplicateCampaign({
   return prisma.automation.create({
     data: {
       ...settings,
+      ...deploymentFollowOverrides(),
       // The rest of the row identifies the original rather than describing it,
       // so the copy is given its own. Passing `undefined` to Prisma leaves a
       // field out of the insert, which is what hands back the column default:
