@@ -834,7 +834,7 @@ async function sendFollowRecheckAck({
   instagramAccountId: string;
   automationId: string;
   userId: string;
-  operationId: string | null;
+  operationId: string;
 }): Promise<void> {
   const message = process.env.FOLLOW_RECHECK_ACK_MESSAGE?.trim();
   if (!message) return;
@@ -852,7 +852,7 @@ async function sendFollowRecheckAck({
     await sendPostbackOnce({
       // Its own id: the tap's id is claimed later by the link or prompt that
       // the re-check sends, and claiming it here would suppress that message.
-      operationId: operationId ? `${operationId}:ack` : null,
+      operationId: `${operationId}:ack`,
       send: () =>
         sendDirectMessage({ context, instagramAccountId, userId, message }),
     });
