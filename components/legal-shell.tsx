@@ -1,5 +1,8 @@
 import Link from "next/link";
 
+export const SERVICE_NAME = "自動回信系統";
+export const SUPPORT_EMAIL = "yes@good01.tw";
+
 interface LegalShellProps {
   title: string;
   description: string;
@@ -18,7 +21,10 @@ export default function LegalShell({
       <header className="border-b border-border">
         <div className="mx-auto flex h-16 max-w-5xl items-center justify-between px-5">
           <Link href="/" className="flex items-center gap-3">
-            <span className="text-lg font-bold text-foreground">OpenReply</span>
+            <span>
+              <span className="block text-lg font-bold text-foreground">{SERVICE_NAME}</span>
+              <span className="block text-xs text-muted">OpenReply self-hosted</span>
+            </span>
           </Link>
           <Link
             href="/login"
@@ -41,6 +47,22 @@ export default function LegalShell({
           {children}
         </div>
       </article>
+      <footer className="border-t border-border">
+        <div className="mx-auto max-w-3xl space-y-4 px-5 py-8 text-sm text-muted">
+          <nav aria-label="Service information" className="flex flex-wrap gap-x-5 gap-y-2">
+            <Link href="/privacy" className="hover:text-foreground">Privacy</Link>
+            <Link href="/terms" className="hover:text-foreground">Terms</Link>
+            <Link href="/data-deletion" className="hover:text-foreground">Data deletion</Link>
+            <Link href="/meta-review" className="hover:text-foreground">Meta review notes</Link>
+          </nav>
+          <p>
+            Service support and data deletion requests:{" "}
+            <a href={`mailto:${SUPPORT_EMAIL}`} className="text-accent underline">
+              {SUPPORT_EMAIL}
+            </a>
+          </p>
+        </div>
+      </footer>
     </main>
   );
 }
