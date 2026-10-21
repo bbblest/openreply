@@ -1,6 +1,7 @@
 "use client";
 
 import LanguageSwitcher from "@/components/language-switcher";
+import InterfaceError from "@/components/interface-error";
 import { useI18n } from "@/lib/i18n/provider";
 import { Suspense, useEffect, useState } from "react";
 import type { AccountOption } from "@/components/account-select";
@@ -326,7 +327,7 @@ export default function SettingsPage() {
               {busy === "invite" ? t("Inviting...") : t("Invite")}
             </button>
             {memberError && (
-              <p className="sm:col-span-3 text-sm text-error">{memberError}</p>
+              <InterfaceError className="sm:col-span-3 text-sm text-error" message={memberError} fallback="Could not invite member" />
             )}
           </form>
         )}

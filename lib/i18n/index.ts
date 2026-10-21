@@ -2,6 +2,7 @@ import zhTW from "./zh-TW.json";
 
 export const LOCALE_COOKIE = "openreply-locale";
 export type Locale = "en" | "zh-TW";
+export const DEFAULT_LOCALE: Locale = "zh-TW";
 export type MessageKey = keyof typeof zhTW;
 
 export function isLocale(value: unknown): value is Locale {
@@ -9,7 +10,7 @@ export function isLocale(value: unknown): value is Locale {
 }
 
 export function resolveLocale(value: unknown): Locale {
-  return isLocale(value) ? value : "en";
+  return isLocale(value) ? value : DEFAULT_LOCALE;
 }
 
 type Placeholders<S extends string> =

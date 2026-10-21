@@ -8,7 +8,8 @@ export default function manifest(): MetadataRoute.Manifest {
   return {
     name: "OpenReply",
     short_name: "OpenReply",
-    description: "Instagram comment-to-DM automation",
+    description: "Instagram 留言自動私訊與追蹤送禮",
+    lang: "zh-TW",
     start_url: "/overview",
     display: "standalone",
     orientation: "portrait",

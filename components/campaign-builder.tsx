@@ -13,7 +13,7 @@
  */
 
 import { useI18n } from "@/lib/i18n/provider";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import AccountSelect, { type AccountOption } from "@/components/account-select";
 import PostPicker from "@/components/post-picker";
@@ -147,6 +147,12 @@ function Toggle({
 export default function CampaignBuilder({ mode, campaignId, followPolicy }: CampaignBuilderProps) {
   const { t } = useI18n();
   const router = useRouter();
+  // Loading a campaign uses the initial language for missing labels. Changing
+  // the interface language must not reload and overwrite an unsaved draft.
+  const loadFallbackLabels = useRef({
+    openLink: t("Open link"),
+    confirmFollow: t("Confirm follow"),
+  });
 
   const [loading, setLoading] = useState(mode === "edit");
   const [notFound, setNotFound] = useState(false);
@@ -178,21 +184,21 @@ export default function CampaignBuilder({ mode, campaignId, followPolicy }: Camp
   const [publicReplyEnabled, setPublicReplyEnabled] = useState(false);
   const [customPublicReplyMessages, setPublicReplyMessages] = useState<string[]>([""]);
 
-  const [openingDmEnabled, setOpeningDmEnabled] = useState(false);
+  const [customOpeningDmEnabled, setOpeningDmEnabled] = useState(false);
   const [customOpeningDmMessage, setOpeningDmMessage] = useState("");
   const [customOpeningDmButtonLabel, setOpeningDmButtonLabel] = useState("");
 
   const [dmMessage, setDmMessage] = useState("");
   const [linkOpen, setLinkOpen] = useState(false);
   const [trackedDestinationUrl, setTrackedDestinationUrl] = useState("");
-  const [linkButtonLabel, setLinkButtonLabel] = useState("Open link");
+  const [linkButtonLabel, setLinkButtonLabel] = useState(t("Open link"));
   const [secondLinkOpen, setSecondLinkOpen] = useState(false);
   const [secondaryDestinationUrl, setSecondaryDestinationUrl] = useState("");
-  const [secondaryButtonLabel, setSecondaryButtonLabel] = useState("Open link");
+  const [secondaryButtonLabel, setSecondaryButtonLabel] = useState(t("Open link"));
   const [customRequireFollow, setRequireFollow] = useState(false);
   const [customFollowPromptMessage, setFollowPromptMessage] = useState("");
   const [customFollowPromptButtonLabel, setFollowPromptButtonLabel] =
-    useState("i'm following");
+    useState(t("Confirm follow"));
   const [followUpEnabled, setFollowUpEnabled] = useState(false);
   const [followUpMessage, setFollowUpMessage] = useState("");
   const [followUpDelayMinutes, setFollowUpDelayMinutes] = useState(0);
@@ -200,6 +206,9 @@ export default function CampaignBuilder({ mode, campaignId, followPolicy }: Camp
   // Server policy applies equally to form values, validation, payload, and preview.
   // Loading an old campaign or CSV row must not restore pre-verification gifts.
   const requireFollow = followPolicy.required || customRequireFollow;
+  // A gated campaign has one first message for both entry points. The follow
+  // prompt replaces the optional opening DM, rather than adding another tap.
+  const openingDmEnabled = !requireFollow && customOpeningDmEnabled;
   const publicReplyMessages = followPolicy.required
     ? [followPolicy.messages.publicReply]
     : customPublicReplyMessages;
@@ -306,19 +315,19 @@ export default function CampaignBuilder({ mode, campaignId, followPolicy }: Camp
         setOpeningDmMessage(c.openingDmMessage ?? "");
         setOpeningDmButtonLabel(c.openingDmButtonLabel ?? "");
         setDmMessage(c.dmMessage);
-        setLinkButtonLabel(c.linkButtonLabel ?? "Open link");
+        setLinkButtonLabel(c.linkButtonLabel ?? loadFallbackLabels.current.openLink);
         setIsActive(c.isActive);
         const link = c.trackedLinks?.[0]?.destinationUrl ?? "";
         setTrackedDestinationUrl(link);
         setLinkOpen(Boolean(link));
         const secondLink = c.trackedLinks?.[1];
         setSecondaryDestinationUrl(secondLink?.destinationUrl ?? "");
-        setSecondaryButtonLabel(secondLink?.label ?? "Open link");
+        setSecondaryButtonLabel(secondLink?.label ?? loadFallbackLabels.current.openLink);
         setSecondLinkOpen(Boolean(secondLink?.destinationUrl));
         setRequireFollow(c.requireFollow ?? false);
         setFollowPromptMessage(c.followPromptMessage ?? "");
         setFollowPromptButtonLabel(
-          c.followPromptButtonLabel ?? "i'm following"
+          c.followPromptButtonLabel ?? loadFallbackLabels.current.confirmFollow
         );
         setFollowUpEnabled(c.followUpEnabled ?? false);
         setFollowUpMessage(c.followUpMessage ?? "");
@@ -371,7 +380,7 @@ export default function CampaignBuilder({ mode, campaignId, followPolicy }: Camp
     setOpeningDmEnabled(hasOpening);
     setOpeningDmMessage(row.openingDmMessage ?? "");
     setOpeningDmButtonLabel(
-      row.openingDmButtonLabel || (hasOpening ? "Send link" : "")
+      row.openingDmButtonLabel || (hasOpening ? t("Send me the link") : "")
     );
     const link = row.trackedUrl ?? "";
     setTrackedDestinationUrl(link);
@@ -451,13 +460,13 @@ export default function CampaignBuilder({ mode, campaignId, followPolicy }: Camp
         ? publicReplyMessages.map((m) => m.trim()).filter(Boolean)
         : [],
       trackedDestinationUrl: trackedDestinationUrl.trim() || "",
-      linkButtonLabel: linkButtonLabel.trim() || "Open link",
+      linkButtonLabel: linkButtonLabel.trim() || t("Open link"),
       secondaryDestinationUrl: secondaryDestinationUrl.trim() || "",
-      secondaryButtonLabel: secondaryButtonLabel.trim() || "Open link",
+      secondaryButtonLabel: secondaryButtonLabel.trim() || t("Open link"),
       requireFollow,
       followPromptMessage: requireFollow ? followPromptMessage.trim() : "",
       followPromptButtonLabel: requireFollow
-        ? followPromptButtonLabel.trim() || "i'm following"
+        ? followPromptButtonLabel.trim() || t("Confirm follow")
         : "",
       followUpEnabled,
       followUpMessage: followUpEnabled ? followUpMessage.trim() : "",
@@ -834,7 +843,8 @@ export default function CampaignBuilder({ mode, campaignId, followPolicy }: Camp
           )}
         </Section>
 
-        <Section title={t("They will get")}>
+        <Section title={requireFollow ? t("First, ask them to follow and confirm") : t("They will get")}>
+          {!requireFollow && (
           <div className="rounded-lg border border-border p-3">
             <div className="flex items-center justify-between">
               <span className="text-sm text-foreground">{t("an opening DM")}</span>
@@ -865,6 +875,7 @@ export default function CampaignBuilder({ mode, campaignId, followPolicy }: Camp
               </div>
             )}
           </div>
+          )}
           <div className="mt-3 rounded-lg border border-border p-3">
             <div className="flex items-center justify-between">
               <span className="text-sm text-foreground">
@@ -882,7 +893,7 @@ export default function CampaignBuilder({ mode, campaignId, followPolicy }: Camp
                   value={followPromptMessage}
                   readOnly={followPolicy.required}
                   onChange={(e) => setFollowPromptMessage(e.target.value)}
-                  placeholder={t("quick favor before i send your link. i don't make any money from this, it's free. if you want to support me, just don't unfollow after, and star the repo on github if it helps you. tap the button once you're following and i'll send it over")}
+                  placeholder={t("Follow this account, then tap the button to confirm. We will send the gift after checking your follow.")}
                   rows={3}
                   className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-foreground placeholder:text-zinc-500 focus:border-accent/40 focus:outline-none resize-none"
                   maxLength={1000}
@@ -891,12 +902,15 @@ export default function CampaignBuilder({ mode, campaignId, followPolicy }: Camp
                   value={followPromptButtonLabel}
                   readOnly={followPolicy.required}
                   onChange={(e) => setFollowPromptButtonLabel(e.target.value)}
-                  placeholder={t("i'm following")}
+                  placeholder={t("Confirm follow")}
                   className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-foreground placeholder:text-zinc-500 focus:border-accent/40 focus:outline-none"
                   maxLength={20}
                 />
                 <p className="text-xs text-muted">
-                  {t("We send the gift and link only after Instagram confirms the follow. If they are not following or verification is unavailable, the gift is not sent.")}
+                  {t("Comments and keyword DMs receive this prompt first. After they tap the button, Instagram must confirm the follow before the gift is sent.")}
+                </p>
+                <p className="text-xs text-muted">
+                  {t("If they are not following or verification is unavailable, keep showing the prompt and withhold the gift.")}
                 </p>
                 {followPolicy.required && (
                   <p className="text-xs text-muted">
@@ -908,7 +922,7 @@ export default function CampaignBuilder({ mode, campaignId, followPolicy }: Camp
           </div>
         </Section>
 
-        <Section title={t("And then, they will get")}>
+        <Section title={requireFollow ? t("After follow confirmation, send the gift") : t("And then, they will get")}>
           <div className="rounded-lg border border-border p-3 space-y-2">
             <span className="text-sm text-foreground">{t("a DM with a link")}</span>
             <textarea
@@ -1044,15 +1058,15 @@ export default function CampaignBuilder({ mode, campaignId, followPolicy }: Camp
             openingDmButtonLabel={openingDmButtonLabel}
             revealMessage={dmMessage}
             hasLink={Boolean(trackedDestinationUrl.trim())}
-            linkButtonLabel={linkButtonLabel || "Open link"}
+            linkButtonLabel={linkButtonLabel || t("Open link")}
             linkUrl={trackedDestinationUrl.trim() || undefined}
             hasSecondLink={
               secondLinkOpen && Boolean(secondaryDestinationUrl.trim())
             }
-            secondLinkButtonLabel={secondaryButtonLabel || "Open link"}
+            secondLinkButtonLabel={secondaryButtonLabel || t("Open link")}
             requireFollow={requireFollow}
             followPromptMessage={followPromptMessage}
-            followPromptButtonLabel={followPromptButtonLabel || "i'm following"}
+            followPromptButtonLabel={followPromptButtonLabel || t("Confirm follow")}
             followUpEnabled={followUpEnabled}
             followUpMessage={followUpMessage}
             followUpDelayMinutes={followUpDelayMinutes}

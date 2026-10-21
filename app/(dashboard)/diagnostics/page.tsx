@@ -1,6 +1,7 @@
 "use client";
 
 import { useI18n } from "@/lib/i18n/provider";
+import { diagnosticLevel, diagnosticMessage, diagnosticSource } from "@/lib/i18n/diagnostics";
 import { useEffect, useState } from "react";
 import StatusBadge from "@/components/status-badge";
 
@@ -59,6 +60,20 @@ function formatDate(value: string, locale: string) {
 
 function EmptyState({ label }: { label: string }) {
   return <p className="py-5 text-center text-sm text-muted">{label}</p>;
+}
+
+function DiagnosticMessage({ message, context }: { message: string; context?: string }) {
+  const { t, locale } = useI18n();
+  const text = diagnosticMessage(message, locale);
+  return (
+    <div className="min-w-0 space-y-1">
+      <p className="break-words text-sm text-foreground">{text.summary}</p>
+      <details className="text-xs text-muted">
+        <summary className="cursor-pointer">{t("Technical details")}</summary>
+        <pre className="mt-2 whitespace-pre-wrap break-words">{context ? `${context}\n` : ""}{text.details}</pre>
+      </details>
+    </div>
+  );
 }
 
 function Section({
@@ -179,11 +194,9 @@ export default function DiagnosticsPage() {
                 className="rounded border border-border bg-surface/50 p-4"
               >
                 <div className="flex flex-wrap items-start justify-between gap-x-3 gap-y-1">
-                  <p className="min-w-0 flex-1 break-words text-sm font-semibold text-foreground">
-                    {alert.message}
-                  </p>
+                  <DiagnosticMessage message={alert.message} context={`level=${alert.level}`} />
                   <span className="shrink-0 rounded-full bg-error/10 px-2 py-1 text-xs font-semibold text-error">
-                    {alert.level}
+                    {diagnosticLevel(alert.level, locale)}
                   </span>
                 </div>
                 <p className="mt-2 text-xs text-muted">
@@ -214,7 +227,7 @@ export default function DiagnosticsPage() {
                     {item.commentText}
                   </p>
                   {item.errorMessage && (
-                    <p className="mt-1 text-xs text-error">{item.errorMessage}</p>
+                    <DiagnosticMessage message={item.errorMessage} />
                   )}
                 </div>
               ))}
@@ -230,11 +243,9 @@ export default function DiagnosticsPage() {
               {data.webhookFailures.map((event) => (
                 <div key={event.id} className="border-b border-border pb-3 last:border-0">
                   <p className="text-sm font-semibold text-foreground">
-                    {event.object ?? t("Instagram webhook")}
+                    {t("Instagram webhook")}
                   </p>
-                  <p className="mt-1 text-xs text-error">
-                    {event.errorMessage ?? t("Unknown error")}
-                  </p>
+                  <DiagnosticMessage message={event.errorMessage ?? t("Unknown error")} context={event.object ? `object=${event.object}` : undefined} />
                   <p className="mt-1 text-xs text-muted">
                     {formatDate(event.createdAt, locale)}
                   </p>
@@ -253,9 +264,7 @@ export default function DiagnosticsPage() {
             <div className="space-y-3">
               {data.tokenRefreshFailures.map((event) => (
                 <div key={event.id} className="border-b border-border pb-3 last:border-0">
-                  <p className="text-sm font-semibold text-foreground">
-                    {event.message}
-                  </p>
+                  <DiagnosticMessage message={event.message} />
                   <p className="mt-1 text-xs text-muted">
                     {formatDate(event.createdAt, locale)}
                   </p>
@@ -274,8 +283,8 @@ export default function DiagnosticsPage() {
           <div className="space-y-3">
             {data.operationalEvents.map((event) => (
               <div key={event.id} className="grid gap-2 border-b border-border pb-3 last:border-0 sm:grid-cols-[140px_1fr_auto]">
-                <p className="text-xs font-semibold text-muted">{event.source}</p>
-                <p className="text-sm text-foreground">{event.message}</p>
+                <p className="text-xs font-semibold text-muted">{diagnosticSource(event.source, locale)} · {diagnosticLevel(event.level, locale)}</p>
+                <DiagnosticMessage message={event.message} context={`source=${event.source}\nlevel=${event.level}`} />
                 <p className="text-xs text-muted">{formatDate(event.createdAt, locale)}</p>
               </div>
             ))}

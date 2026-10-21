@@ -630,9 +630,10 @@ describe("DM Worker — Full Pipeline", () => {
     );
     expect(mockSendPrivateReplyWithLinkButton).not.toHaveBeenCalled();
     expect(mockSendPrivateReply).not.toHaveBeenCalled();
+    expect(mockGetUserFollowStatus).not.toHaveBeenCalled();
   });
 
-  it("should skip the prompt and send the link when the commenter already follows", async () => {
+  it("should still require a confirmation tap when the commenter already follows", async () => {
     mockGetUserFollowStatus.mockResolvedValue(true); // already following
     mockPrisma.automation.findMany.mockResolvedValue([
       {
@@ -655,18 +656,20 @@ describe("DM Worker — Full Pipeline", () => {
     const processor = getProcessor();
     await processor(createMockJob());
 
-    // Confirmed follower: no prompt, link delivered right away.
-    expect(mockSendPrivateReplyWithButton).not.toHaveBeenCalled();
-    expect(mockSendPrivateReplyWithLinkButton).toHaveBeenCalledWith(
+    expect(mockSendPrivateReplyWithButton).toHaveBeenCalledWith(
       "decrypted_token",
       "ig_456",
       "comment_555",
-      "Hey commenter_user! Here is the offer:",
-      [{ title: "Get offer", url: "http://localhost:3000/r/abc123" }]
+      "Follow me first, then tap 👇",
+      "I'm following ✅",
+      "followcheck:auto_789"
     );
+    expect(mockGetUserFollowStatus).not.toHaveBeenCalled();
+    expect(mockSendPrivateReplyWithLinkButton).not.toHaveBeenCalled();
+    expect(mockSendPrivateReply).not.toHaveBeenCalled();
   });
 
-  it("should send the opening DM first (routing to the follow check) when both opening DM and follow-gate are on", async () => {
+  it("should use the follow prompt instead of a generic opening DM for a gated campaign", async () => {
     mockPrisma.automation.findMany.mockResolvedValue([
       {
         ...mockAutomation,
@@ -674,6 +677,7 @@ describe("DM Worker — Full Pipeline", () => {
         openingDmMessage: "Hey {username}, welcome!",
         openingDmButtonLabel: "Get the link",
         requireFollow: true,
+        followPromptMessage: "Follow me first {username}, then confirm.",
         followPromptButtonLabel: "I'm following ✅",
         trackedLinks: [
           {
@@ -688,14 +692,14 @@ describe("DM Worker — Full Pipeline", () => {
     const processor = getProcessor();
     await processor(createMockJob());
 
-    // Opening DM goes out first; its button routes into the follow check.
+    // The same follow prompt is used regardless of generic opening settings.
     expect(mockSendPrivateReplyWithButton).toHaveBeenCalledWith(
       "decrypted_token",
       "ig_456",
       "comment_555",
-      "Hey commenter_user, welcome!",
-      "Get the link",
-      "followcheck:auto_789:open"
+      "Follow me first commenter_user, then confirm.",
+      "I'm following ✅",
+      "followcheck:auto_789"
     );
     // Follow status is verified on the tap, not at comment time.
     expect(mockGetUserFollowStatus).not.toHaveBeenCalled();
@@ -810,7 +814,7 @@ describe("DM Worker — Full Pipeline", () => {
     expect(mockSendDirectMessageWithButton).not.toHaveBeenCalled();
   });
 
-  it("should deliver a follow-gated read fallback once the user follows", async () => {
+  it("should not deliver a follow-gated read fallback even when the user follows", async () => {
     mockPrisma.automation.findMany.mockResolvedValue([]);
     mockPrisma.automation.findFirst.mockResolvedValue({
       ...mockAutomation,
@@ -829,12 +833,11 @@ describe("DM Worker — Full Pipeline", () => {
       })
     );
 
-    expect(mockSendDirectMessage).toHaveBeenCalledWith(
-      "decrypted_token",
-      "ig_456",
-      "commenter_999",
-      "Hey commenter_user! Here is the link: https://example.com"
-    );
+    expect(mockGetUserFollowStatus).not.toHaveBeenCalled();
+    expect(mockSendDirectMessage).not.toHaveBeenCalled();
+    expect(mockSendDirectMessageWithLinkButton).not.toHaveBeenCalled();
+    expect(mockReserveWorkspaceDMSend).not.toHaveBeenCalled();
+    expect(mockPrisma.dmLog.upsert).not.toHaveBeenCalled();
   });
 
   it("should not log a failure when a read fallback hits a closed messaging window", async () => {
@@ -1174,7 +1177,7 @@ describe("DM Worker — DM keyword trigger", () => {
 });
 
 describe("Zernio worker routing", () => {
-  it("sends only the follow prompt when the selected provider cannot confirm following", async () => {
+  it("sends the follow prompt through the selected provider without looking up follow status first", async () => {
     mockPrisma.zernioConnection.findUnique.mockResolvedValue({
       apiKey: "encrypted_key",
     });
@@ -1194,27 +1197,19 @@ describe("Zernio worker routing", () => {
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({
-            isFollower: null,
-            unavailableReason: "consent_required",
-          })
-        )
-      )
-      .mockResolvedValueOnce(
         new Response(JSON.stringify({ messageId: "sent" }))
       );
     vi.stubGlobal("fetch", fetchMock);
     try {
       await getProcessor()(createMockJob());
-      expect(fetchMock).toHaveBeenCalledTimes(2);
-      expect(fetchMock.mock.calls[1][0]).toContain(
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(fetchMock.mock.calls[0][0]).toContain(
         "/inbox/comments/media_101/comment_555/private-reply"
       );
-      expect(JSON.parse(fetchMock.mock.calls[1][1].body).accountId).toBe(
+      expect(JSON.parse(fetchMock.mock.calls[0][1].body).accountId).toBe(
         "zernio_selected"
       );
-      const sent = JSON.parse(fetchMock.mock.calls[1][1].body);
+      const sent = JSON.parse(fetchMock.mock.calls[0][1].body);
       expect(sent.buttons).toEqual([
         expect.objectContaining({ type: "postback", payload: "followcheck:auto_789" }),
       ]);
@@ -1867,28 +1862,68 @@ describe("DM Worker — confirmed-follow gift delivery", () => {
 
   it.each(providers.flatMap((provider) => paths.flatMap((path) =>
     states.map((status) => ({ provider, path, status })),
-  )))("$provider $path sends gifts only for a confirmed follow ($status)", async ({ provider, path, status }) => {
+  )))("$provider $path requires a button before verification and a confirmed follow before gifts ($status)", async ({ provider, path, status }) => {
     setCampaign(campaign(provider));
     followStatus(status);
     await getProcessor()(job(path));
 
-    if (provider === "META") expect(mockGetUserFollowStatus).toHaveBeenCalledTimes(1);
-    else expect(fetchMock.mock.calls.some(([url]) => url.includes("/follow-status/") && url.endsWith("?refresh=true"))).toBe(true);
-    if (status === true) expect(JSON.stringify(outgoing())).toContain(gift);
+    const initialRequest = path === "comment" || path === "message";
+    if (provider === "META") expect(mockGetUserFollowStatus).toHaveBeenCalledTimes(initialRequest ? 0 : 1);
+    else expect(fetchMock.mock.calls.some(([url]) => url.includes("/follow-status/") && url.endsWith("?refresh=true"))).toBe(!initialRequest);
+    if (!initialRequest && status === true) expect(JSON.stringify(outgoing())).toContain(gift);
     else expectNoGift();
+    if (initialRequest) {
+      expect(JSON.stringify(outgoing())).toContain("followcheck:auto_789");
+      expect(mockQueueAdd.mock.calls.some(([name]) => name === "process-followup")).toBe(false);
+    }
     if (path === "followup" && status !== true) expect(outgoing()).toHaveLength(0);
     if (status !== true) expect(mockQueueAdd.mock.calls.some(([name]) => name === "process-followup")).toBe(false);
   });
 
+  it.each((["comment", "message"] as const).flatMap((path) =>
+    [false, true].flatMap((forced) => states.map((status) => ({ path, forced, status }))),
+  ))("$path starts with a prompt, then its button verifies the follow (forced=$forced, status=$status)", async ({ path, forced, status }) => {
+    vi.stubEnv("REQUIRE_CONFIRMED_FOLLOW", String(forced));
+    setCampaign({ ...campaign(), requireFollow: !forced });
+    followStatus(status);
+    const processJob = getProcessor();
+
+    await processJob(job(path));
+
+    expect(mockGetUserFollowStatus).not.toHaveBeenCalled();
+    expectNoGift();
+    const prompt = path === "comment"
+      ? mockSendPrivateReplyWithButton
+      : mockSendDirectMessageWithButton;
+    expect(prompt).toHaveBeenCalledTimes(1);
+    const payload = prompt.mock.calls[0][5];
+    expect(payload).toBe("followcheck:auto_789");
+
+    await processJob(job("postback", { payload }));
+
+    expect(mockGetUserFollowStatus).toHaveBeenCalledTimes(1);
+    if (status === true) {
+      expect(mockSendDirectMessageWithLinkButton).toHaveBeenCalledTimes(1);
+      expect(mockPrisma.dmLog.upsert).toHaveBeenCalledWith(expect.objectContaining({
+        create: expect.objectContaining({ commentId: "reveal:commenter_999", status: "SENT" }),
+      }));
+    } else {
+      expectNoGift();
+      expect(mockSendDirectMessageWithLinkButton).not.toHaveBeenCalled();
+      expect(mockQueueAdd).toHaveBeenCalledWith("process-postback", expect.objectContaining({ followRecheckAttempt: 1 }), expect.anything());
+    }
+  });
+
   it.each(["reveal:auto_789", "reveal:auto_789:open", "followcheck:auto_789:open"]
-    .flatMap((payload) => [false, null].map((status) => ({ payload, status }))))(
-    "does not bypass the gate with legacy/opening payload $payload and status $status",
+    .flatMap((payload) => states.map((status) => ({ payload, status }))))(
+    "verifies legacy/opening payload $payload and only releases for true ($status)",
     async ({ payload, status }) => {
       setCampaign(campaign());
       followStatus(status);
       await getProcessor()(job("postback", { payload }));
       expect(mockGetUserFollowStatus).toHaveBeenCalledTimes(1);
-      expectNoGift();
+      if (status === true) expect(JSON.stringify(outgoing())).toContain(gift);
+      else expectNoGift();
     },
   );
 
@@ -1935,7 +1970,7 @@ describe("DM Worker — confirmed-follow gift delivery", () => {
       const processJob = getProcessor();
       vi.stubEnv("REQUIRE_CONFIRMED_FOLLOW", "true");
       await processJob(job(path, { followRecheck: true, followRecheckAttempt: 2 }));
-      expect(mockGetUserFollowStatus).toHaveBeenCalledTimes(1);
+      expect(mockGetUserFollowStatus).toHaveBeenCalledTimes(path === "comment" || path === "message" ? 0 : 1);
       expectNoGift();
     },
   );
@@ -1963,16 +1998,17 @@ describe("DM Worker — confirmed-follow gift delivery", () => {
     expect(publicText).not.toContain("{link}");
     expect(publicText).not.toContain("/r/private-gift");
     expect(mockSendPrivateReplyWithButton).toHaveBeenCalledTimes(1);
-    expect(mockSendPrivateReplyWithButton.mock.calls[0][5]).toBe("followcheck:auto_789:open");
+    expect(mockSendPrivateReplyWithButton.mock.calls[0][5]).toBe("followcheck:auto_789");
+    expect(mockGetUserFollowStatus).not.toHaveBeenCalled();
     expectNoGift();
   });
 
-  it.each([false, null])("silently blocks an opted-out read fallback in forced mode (%s)", async (status) => {
+  it.each(states)("never substitutes a read fallback for confirmation in forced mode (%s)", async (status) => {
     vi.stubEnv("REQUIRE_CONFIRMED_FOLLOW", "true");
     setCampaign({ ...campaign(), requireFollow: false });
     followStatus(status);
     await getProcessor()(job("postback", { payload: "reveal:auto_789", fallback: true }));
-    expect(mockGetUserFollowStatus).toHaveBeenCalledTimes(1);
+    expect(mockGetUserFollowStatus).not.toHaveBeenCalled();
     expect(outgoing()).toHaveLength(0);
     expect(mockQueueAdd).not.toHaveBeenCalled();
     expect(mockReserveWorkspaceDMSend).not.toHaveBeenCalled();
@@ -1993,10 +2029,10 @@ describe("DM Worker — confirmed-follow gift delivery", () => {
     vi.stubEnv("REQUIRE_CONFIRMED_FOLLOW", "true");
     setCampaign({ ...campaign(), requireFollow: false });
     followStatus(true);
-    mockSendPrivateReplyWithLinkButton.mockRejectedValueOnce(new MetaApiError(100, undefined, undefined, "Unsupported message template"));
-    await getProcessor()(job("comment"));
-    expect(mockSendPrivateReplyWithLinkButton).toHaveBeenCalledTimes(1);
-    expect(mockSendPrivateReply).toHaveBeenCalledTimes(1);
-    expect(mockSendPrivateReply.mock.calls[0][3]).toContain("/r/private-gift");
+    mockSendDirectMessageWithLinkButton.mockRejectedValueOnce(new MetaApiError(100, undefined, undefined, "Unsupported message template"));
+    await getProcessor()(job("postback"));
+    expect(mockSendDirectMessageWithLinkButton).toHaveBeenCalledTimes(1);
+    expect(mockSendDirectMessage).toHaveBeenCalledTimes(1);
+    expect(mockSendDirectMessage.mock.calls[0][3]).toContain("/r/private-gift");
   });
 });

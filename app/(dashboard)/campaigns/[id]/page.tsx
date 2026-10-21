@@ -230,7 +230,7 @@ export default function CampaignDetailPage() {
           )}
         </Summary>
 
-        {campaign.openingDmEnabled && (
+        {campaign.openingDmEnabled && !campaign.requireFollow && (
           <Summary title={t("They will get an opening DM")}>
             <FieldBox>{campaign.openingDmMessage || t("Opening message")}</FieldBox>
             <FieldBox>{campaign.openingDmButtonLabel || t("Button")}</FieldBox>
@@ -238,25 +238,28 @@ export default function CampaignDetailPage() {
         )}
 
         {campaign.requireFollow && (
-          <Summary title={t("They must follow first")}>
+          <Summary title={t("First, ask them to follow and confirm")}>
             <FieldBox>
               {campaign.followPromptMessage ||
-                "quick favor before i send your link. i don't make any money from this, it's free. if you want to support me, just don't unfollow after, and star the repo on github if it helps you. tap the button once you're following and i'll send it over"}
+                t("Follow this account, then tap the button to confirm. We will send the gift after checking your follow.")}
             </FieldBox>
             <FieldBox>
-              {campaign.followPromptButtonLabel || "i'm following"}
+              {campaign.followPromptButtonLabel || t("Confirm follow")}
             </FieldBox>
+            <p className="text-xs text-muted">
+              {t("Comments and keyword DMs receive this prompt first. After they tap the button, Instagram must confirm the follow before the gift is sent.")}
+            </p>
           </Summary>
         )}
 
-        <Summary title={t("And then, they will get a DM")}>
+        <Summary title={campaign.requireFollow ? t("After follow confirmation, send the gift") : t("And then, they will get a DM")}>
           <FieldBox>{campaign.dmMessage}</FieldBox>
           {hasLink && (
-            <FieldBox>{campaign.linkButtonLabel || "Open link"}</FieldBox>
+            <FieldBox>{campaign.linkButtonLabel || t("Open link")}</FieldBox>
           )}
           {hasSecondLink && (
             <FieldBox>
-              {campaign.trackedLinks?.[1]?.label || "Open link"}
+              {campaign.trackedLinks?.[1]?.label || t("Open link")}
             </FieldBox>
           )}
         </Summary>
@@ -347,28 +350,28 @@ export default function CampaignDetailPage() {
             avatarUrl={avatarUrl}
             postThumb={postThumb}
             caption=""
-            sampleComment={campaign.matchAnyWord ? t("nice!") : campaign.keywords[0] ?? "LINK"}
+            sampleComment={campaign.matchAnyWord ? t("nice!") : campaign.keywords[0] ?? t("your comment")}
             dmTriggerEnabled={campaign.dmTriggerEnabled}
             publicReplyEnabled={campaign.publicReplyEnabled}
             publicReplyMessage={publicReplies[0] ?? ""}
-            openingDmEnabled={campaign.openingDmEnabled}
+            openingDmEnabled={campaign.openingDmEnabled && !campaign.requireFollow}
             openingDmMessage={campaign.openingDmMessage ?? ""}
             openingDmButtonLabel={campaign.openingDmButtonLabel ?? ""}
             revealMessage={campaign.dmMessage}
             hasLink={hasLink}
-            linkButtonLabel={campaign.linkButtonLabel ?? "Open link"}
+            linkButtonLabel={campaign.linkButtonLabel ?? t("Open link")}
             linkUrl={
               campaign.trackedLinks?.[0]?.trackedUrl ??
               campaign.trackedLinks?.[0]?.destinationUrl
             }
             hasSecondLink={hasSecondLink}
             secondLinkButtonLabel={
-              campaign.trackedLinks?.[1]?.label ?? "Open link"
+              campaign.trackedLinks?.[1]?.label ?? t("Open link")
             }
             requireFollow={campaign.requireFollow}
             followPromptMessage={campaign.followPromptMessage ?? ""}
             followPromptButtonLabel={
-              campaign.followPromptButtonLabel ?? "i'm following"
+              campaign.followPromptButtonLabel ?? t("Confirm follow")
             }
             followUpEnabled={campaign.followUpEnabled ?? false}
             followUpMessage={campaign.followUpMessage ?? ""}

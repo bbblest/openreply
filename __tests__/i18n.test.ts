@@ -3,11 +3,12 @@ import { createI18n, resolveLocale } from "../lib/i18n";
 import zhTW from "../lib/i18n/zh-TW.json";
 
 describe("interface translations", () => {
-  it("keeps English as the default for absent or unsupported preferences", () => {
+  it("defaults new sessions and expired preferences to Traditional Chinese", () => {
     for (const value of [undefined, null, "", "fr", "zh-CN", "../zh-TW"]) {
-      expect(resolveLocale(value)).toBe("en");
+      expect(resolveLocale(value)).toBe("zh-TW");
     }
     expect(resolveLocale("zh-TW")).toBe("zh-TW");
+    expect(resolveLocale("en")).toBe("en");
   });
 
   it("renders both interface languages from the same keys", () => {

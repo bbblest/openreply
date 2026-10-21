@@ -634,27 +634,16 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
       }
     }
 
-    // With an opening DM, the private reply is a button message; tapping it
-    // fires a postback that delivers the reveal (see processPostback). Without
-    // one, we send the reveal text directly as today.
+    // Gated campaigns always ask for an explicit confirmation tap first, even
+    // when the commenter already follows. Do not read follow status or reveal
+    // the gift at comment time. Generic opening DMs remain available to
+    // campaigns without a follow gate.
+    const sendFollowPrompt = requireConfirmedFollow(automation);
     const useOpeningDm =
+      !sendFollowPrompt &&
       automation.openingDmEnabled &&
       Boolean(automation.openingDmMessage) &&
       Boolean(automation.openingDmButtonLabel);
-
-    // Follow-gating: the link is revealed only after a follow. When an opening
-    // DM is enabled it comes FIRST, and its button routes into the follow check
-    // (opening DM → follow gate → link). Without an opening DM, we check follow
-    // status at comment time: confirmed followers get the link now, everyone
-    // else gets the "follow me first" prompt (re-verified on tap).
-    let sendFollowPrompt = false;
-    if (requireConfirmedFollow(automation) && !useOpeningDm) {
-      const alreadyFollows = await readFollowStatus({
-        context: accessToken,
-        recipientId: commenterId,
-      });
-      sendFollowPrompt = alreadyFollows !== true;
-    }
 
     let claimed;
     try {
@@ -929,6 +918,11 @@ async function processPostback(job: Job<ProcessPostbackJob>): Promise<void> {
     return;
   }
 
+  // A read receipt is not an explicit request to verify a follow. Gated
+  // campaigns wait for a real button tap, including users who already follow.
+  // Keep the historical read fallback only for campaigns without this gate.
+  if (fallback && requireConfirmedFollow(automation)) return;
+
   // Duplicate sends are enabled: every button tap re-sends the reveal
   // instead of only firing once per person.
   const dedupeId = `reveal:${userId}`;
@@ -975,21 +969,16 @@ async function processPostback(job: Job<ProcessPostbackJob>): Promise<void> {
     ]))
     .digest("hex");
 
-  // Check every reveal, including legacy reveal: buttons and read fallbacks.
+  // Verify every real confirmation tap, including legacy reveal: buttons.
   // A button tap is a request to verify, never proof that the user follows.
   if (requireConfirmedFollow(automation)) {
     const follows = await readFollowStatus({
       context: accessToken,
       recipientId: userId,
     });
-    // A read fallback needs a confirmed follow. Instagram only reports follow
-    // status once the person has tapped a button (before that it answers
-    // "User consent is required", i.e. null), so failing open here handed the
-    // link to anyone who read the opening DM and waited, follower or not.
-    if (fallback && follows !== true) return;
     if (follows !== true) {
 
-      // A tap on an opening-DM button is not a claim to follow — most people
+      // A tap on a legacy opening-DM button is not a claim to follow — most people
       // who tap it simply don't follow yet — so they get the follow prompt
       // right away. Only the prompt's own button earns the delayed re-check;
       // holding an opening tap for it left people staring at a silent chat.
@@ -1287,8 +1276,9 @@ async function processFollowUp(job: Job<ProcessFollowUpJob>): Promise<void> {
  * Reply to an inbound DM whose text matches a campaign's keywords.
  *
  * The user has messaged us, so the conversation is already open: this path
- * skips the opening DM (which exists to work around private-reply limits from
- * comments) and delivers the reveal directly, honouring the follow gate.
+ * skips the generic opening DM. Gated campaigns always send the follow prompt
+ * first; only its button tap may verify and reveal. Ungated campaigns keep
+ * their direct keyword reply.
  * Dedup is per inbound message id, so each message triggers at most one reply.
  */
 async function processMessage(job: Job<ProcessMessageJob>): Promise<void> {
@@ -1410,17 +1400,10 @@ async function processMessage(job: Job<ProcessMessageJob>): Promise<void> {
     });
     const commenterName = priorLog?.commenterName ?? null;
 
-    // Follow gate: anyone not confirmed as a follower gets the prompt instead of
-    // the link, with the same `followcheck:` button that re-verifies on tap.
-    // Unknown and failed lookups withhold gifts, exactly like every other path.
-    let sendFollowPrompt = false;
-    if (requireConfirmedFollow(automation)) {
-      const follows = await readFollowStatus({
-        context: accessToken,
-        recipientId: senderId,
-      });
-      sendFollowPrompt = follows !== true;
-    }
+    // A keyword starts the confirmation flow; it is not confirmation itself.
+    // Even existing followers must tap the button before any status lookup or
+    // gift delivery. This matches the gated comment entry point.
+    const sendFollowPrompt = requireConfirmedFollow(automation);
 
     const usage = await reserveWorkspaceDMSend(automation.workspaceId);
     if (!usage.allowed) {

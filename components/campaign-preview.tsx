@@ -23,8 +23,7 @@ interface CampaignPreviewProps {
   postThumb: string | null;
   caption: string;
   sampleComment: string;
-  // The DM keyword trigger gets its own thread: the user messages first, and
-  // the opening DM is skipped because the conversation is already open.
+  // Both entry points show the same follow prompt for gated campaigns.
   dmTriggerEnabled: boolean;
   publicReplyEnabled: boolean;
   publicReplyMessage: string;
@@ -371,7 +370,7 @@ function DmScreen({
             </div>
           </div>
         )}
-        {openingDmEnabled && (
+        {openingDmEnabled && !requireFollow && (
           <>
             <div className="flex items-end gap-2">
               <Avatar url={avatarUrl} size={24} />
@@ -396,18 +395,16 @@ function DmScreen({
               <div className="max-w-[80%] overflow-hidden rounded-2xl rounded-bl-md bg-zinc-800">
                 <p className="whitespace-pre-wrap px-3 py-2 text-sm">
                   {followPromptMessage ||
-                    "quick favor before i send your link. i don't make any money from this, it's free. if you want to support me, just don't unfollow after, and star the repo on github if it helps you. tap the button once you're following and i'll send it over"}
+                    t("Follow this account, then tap the button to confirm. We will send the gift after checking your follow.")}
                 </p>
                 <div className="mx-1.5 mb-1.5 rounded-xl bg-zinc-700 px-4 py-1.5 text-center text-sm font-medium text-white">
-                  {followPromptButtonLabel || "i'm following"}
+                  {followPromptButtonLabel || t("Confirm follow")}
                 </div>
               </div>
             </div>
-            <div className="flex justify-end">
-              <div className="rounded-2xl rounded-br-md bg-accent px-3 py-2 text-sm">
-                {followPromptButtonLabel || "i'm following"}
-              </div>
-            </div>
+            <p className="py-1 text-center text-[11px] text-zinc-400">
+              {t("After they tap the button and Instagram confirms the follow")}
+            </p>
           </>
         )}
         {(() => {
@@ -433,11 +430,11 @@ function DmScreen({
                 {showCard && (
                   <>
                     <div className="mx-1.5 mb-1.5 rounded-xl bg-zinc-700 px-4 py-1.5 text-center text-sm font-medium text-white">
-                      {linkButtonLabel || "Open link"}
+                      {linkButtonLabel || t("Open link")}
                     </div>
                     {hasSecondLink && (
                       <div className="mx-1.5 mb-1.5 rounded-xl bg-zinc-700 px-4 py-1.5 text-center text-sm font-medium text-white">
-                        {secondLinkButtonLabel || "Open link"}
+                        {secondLinkButtonLabel || t("Open link")}
                       </div>
                     )}
                   </>
@@ -485,7 +482,7 @@ export default function CampaignPreview(props: CampaignPreviewProps) {
   const tabs: { key: PreviewTab; label: string }[] = [
     { key: "post", label: t("Post") },
     { key: "comments", label: t("Comments") },
-    { key: "dm", label: "DM" },
+    { key: "dm", label: t("Comment-triggered DM") },
     ...(props.dmTriggerEnabled
       ? [{ key: "dmTrigger" as const, label: t("DM trigger") }]
       : []),
@@ -541,7 +538,7 @@ export default function CampaignPreview(props: CampaignPreviewProps) {
           <DmScreen
             username={props.username}
             avatarUrl={props.avatarUrl}
-            // The user opened the conversation, so no opening DM is sent.
+            // Gated campaigns still start with the same follow prompt.
             openingDmEnabled={false}
             openingDmMessage=""
             openingDmButtonLabel=""
@@ -561,6 +558,12 @@ export default function CampaignPreview(props: CampaignPreviewProps) {
           />
         )}
       </Phone>
+
+      {props.requireFollow && (activeTab === "dm" || activeTab === "dmTrigger") && (
+        <p className="max-w-sm text-center text-xs text-muted">
+          {t("Success preview: the gift appears only after follow confirmation. If the follow cannot be confirmed, only the prompt is sent.")}
+        </p>
+      )}
 
       <div className="inline-flex rounded-full bg-surface p-1">
         {tabs.map((t) => (

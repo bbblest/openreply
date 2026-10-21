@@ -1,9 +1,12 @@
 # Strict follower gifts
 
-This fork checks follower status before gated gift delivery through comments,
-keyword DMs, button postbacks (including legacy `reveal:` buttons), read
-fallbacks and delayed follow-ups. Only an explicit `true` result releases the
+This fork checks follower status before gated gift delivery through button
+postbacks (including legacy `reveal:` buttons) and delayed follow-ups.
+Read-receipt fallbacks are disabled for gated campaigns. Only an explicit `true` result releases the
 gift. False, unknown, missing fields and lookup errors do not release it.
+Both keyword comments and keyword DMs first send the same follow prompt and
+confirmation button, including for recipients who already follow. Only a real
+button tap starts gift delivery; a read receipt cannot stand in for that tap.
 Button taps request a new check; they do not prove a follow. Pending checks can
 retry after 20 and 40 seconds, but retries never turn unknown into permission.
 

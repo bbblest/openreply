@@ -19,9 +19,11 @@ describe("language preference", () => {
     expect(t("Settings")).toBe("設定");
   });
 
-  it("falls back to English for an invalid cookie", async () => {
+  it("uses Traditional Chinese when the saved preference is missing or invalid", async () => {
     store.get.mockReturnValue({ value: "unsupported" });
-    expect((await getI18n()).locale).toBe("en");
+    expect((await getI18n()).locale).toBe("zh-TW");
+    store.get.mockReturnValue(undefined);
+    expect((await getI18n()).locale).toBe("zh-TW");
   });
 
   it("persists only the language cookie, across routes and browser restarts", async () => {

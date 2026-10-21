@@ -16,8 +16,8 @@ import { parseCsv } from "@/lib/utils/csv";
 import { IMPORT_QUEUE_KEY, IMPORT_ACCOUNT_KEY } from "@/lib/import-queue";
 
 const SAMPLE = `keywords,dm_message,public_reply,tracked_url,opening_dm,opening_dm_button
-"yc","here it is: {link}","sent. check dms","https://events.ycombinator.com/startup-school-2026","hey! click below for the referral","send link"
-"LINK,SHOP","grab it here: {link}","dmed u",,,`;
+"禮物","已確認追蹤，這是你的禮物：{link}","領取方式請查看私訊，並先追蹤本帳號。","https://example.com/gift","請先追蹤本帳號，再按下方按鈕確認。","確認追蹤"
+"教學,清單","已確認追蹤，這是你需要的資料：{link}","請先追蹤本帳號，並查看私訊邀請。","https://example.com/guide","請先追蹤本帳號，再按下方按鈕確認。","確認追蹤"`;
 
 export default function ImportCampaignsPage() {
   const { t } = useI18n();

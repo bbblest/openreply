@@ -1,6 +1,7 @@
 # Interface languages
 
-OpenReply defaults to English. Choose **English** or **繁體中文** in the dashboard
+OpenReply defaults to **繁體中文** in code, including new browsers and expired
+preferences. Choose **繁體中文** or **英文（English）** in the dashboard
 sidebar, under **Settings → Interface language**, or on the sign-in screen.
 The choice is stored in a browser cookie for one year and applies to the
 dashboard, sign-in screens, workspace invitations, and shared campaign reports.
@@ -11,7 +12,9 @@ unsaved campaign stays in the editor when switching languages. Default outgoing
 message content retains its original values in both languages.
 
 Public marketing, template playbooks, legal pages, authentication emails, and
-raw API/provider error details remain in English. Those are outside this
+raw API/provider error details remain in English. Diagnostics and inbox errors
+show Chinese summaries, with the original provider detail in an expandable
+technical section. Public pages and email copy are outside this dashboard
 interface translation's scope.
 
 ## Adding or changing copy
@@ -31,7 +34,7 @@ interface translation's scope.
 ## Rendering and persistence
 
 The locale cookie is validated on the server; missing or unsupported values
-fall back to English. A server action saves it and re-renders the current route
+fall back to Traditional Chinese. A server action saves it and re-renders the current route
 without remounting the editor. The action sets a same-site, HTTP-only cookie,
 with the secure flag in production. There is no translation dependency, new
 database column, or change to the sending worker.
@@ -44,10 +47,10 @@ document language while mounted and restores it when leaving these routes.
 ## Validation
 
 Run the contribution checks in `CONTRIBUTING.md`. The locale unit tests cover
-preference validation, persistence, English fallback, interpolation, and status
+preference validation, persistence, Traditional Chinese fallback, interpolation, and status
 labels. For browser verification:
 
-1. Start with no locale cookie: sign-in should display English.
+1. Start with no locale cookie: sign-in should display Traditional Chinese.
 2. Switch to Traditional Chinese, reload, and navigate to another localized
    route: the selected language, labels, and dates should remain consistent.
 3. In the campaign editor, change a message and toggle an option without saving.

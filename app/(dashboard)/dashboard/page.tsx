@@ -185,7 +185,7 @@ export default function DashboardPage() {
               >
                 <div className="min-w-0 flex-1">
                   <p className="text-sm font-medium text-foreground truncate">
-                    @{log.commenterName ?? "unknown"}
+                    {log.commenterName ? `@${log.commenterName}` : t("Unknown account")}
                   </p>
                   <p className="text-xs text-muted truncate">
                     {log.instagramAccount

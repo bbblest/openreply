@@ -7,11 +7,12 @@
  * history and a reply composer. Messages are read from the Conversations API
  * (Meta only exposes the 20 most recent per thread) and refreshed by polling.
  * Sending is subject to Instagram's 24-hour messaging window — Meta's error is
- * surfaced verbatim when it applies.
+ * available in expandable technical details when it applies.
  */
 
 import type { Locale } from "@/lib/i18n";
 import { useI18n } from "@/lib/i18n/provider";
+import InterfaceError from "@/components/interface-error";
 import { useCallback, useEffect, useRef, useState } from "react";
 import AccountSelect, { type AccountOption } from "@/components/account-select";
 import { readCache, writeCache } from "@/lib/client-cache";
@@ -291,7 +292,7 @@ export default function InboxPage() {
             {convLoading ? (
               <p className="px-4 py-6 text-sm text-muted">{t("Loading…")}</p>
             ) : convError ? (
-              <p className="px-4 py-6 text-sm text-error">{convError === "Failed to load conversations" ? t("Failed to load conversations") : convError}</p>
+              <InterfaceError className="px-4 py-6 text-sm text-error" message={convError} fallback="Failed to load conversations" />
             ) : conversations.length === 0 ? (
               <p className="px-4 py-6 text-sm text-muted">{t("No conversations yet.")}</p>
             ) : (
@@ -308,7 +309,7 @@ export default function InboxPage() {
                   >
                     <div className="flex items-baseline justify-between gap-2">
                       <span className="truncate text-sm font-medium text-foreground">
-                        {c.detailsUnavailable ? t("Details unavailable") : `@${c.contact.username ?? "unknown"}`}
+                        {c.detailsUnavailable ? t("Details unavailable") : c.contact.username ? `@${c.contact.username}` : t("Unknown account")}
                       </span>
                       <span className="shrink-0 text-[11px] text-zinc-500">
                         {formatTime(c.updatedTime, locale)}
@@ -351,7 +352,7 @@ export default function InboxPage() {
                   {t("Back")}
                 </button>
                 <span className="truncate">
-                  {active.detailsUnavailable ? t("Details unavailable") : `@${active.contact.username ?? "unknown"}`}
+                  {active.detailsUnavailable ? t("Details unavailable") : active.contact.username ? `@${active.contact.username}` : t("Unknown account")}
                 </span>
               </div>
 
@@ -393,7 +394,7 @@ export default function InboxPage() {
 
               <div className="shrink-0 border-t border-border p-3">
                 {sendError && (
-                  <p className="mb-2 text-xs text-error">{sendError}</p>
+                  <InterfaceError className="mb-2 text-xs text-error" message={sendError} fallback="Failed to send message" />
                 )}
                 <div className="flex items-end gap-2">
                   <textarea
