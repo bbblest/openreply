@@ -118,6 +118,43 @@ describe("Instagram provider boundary", () => {
       await getUserFollowStatus({ context, recipientId: "person" })
     ).toBeNull();
   });
+  it.each([
+    { description: "user follows business", body: { is_user_follow_business: true, is_business_follow_user: false }, expected: true },
+    { description: "business follows user only", body: { is_user_follow_business: false, is_business_follow_user: true }, expected: false },
+    { description: "reverse relation without user follow", body: { is_business_follow_user: true }, expected: null },
+    { description: "string true", body: { is_user_follow_business: "true" }, expected: null },
+    { description: "string false", body: { is_user_follow_business: "false" }, expected: null },
+    { description: "numeric true", body: { is_user_follow_business: 1 }, expected: null },
+    { description: "missing field", body: {}, expected: null },
+    { description: "null profile", body: null, expected: null },
+    { description: "array profile", body: [{ is_user_follow_business: true }], expected: null },
+    { description: "HTTP-200 error envelope", body: { is_user_follow_business: true, error: { code: 190 } }, expected: null },
+  ])("uses only the explicit user-to-business Meta relation: $description", async ({ body, expected }) => {
+    respond(body);
+    expect(await getUserFollowStatus({ context: { provider: "META", accessToken: "fake-meta" }, recipientId: "recipient_test" })).toBe(expected);
+    const [requestUrl, options] = fetchMock.mock.calls[0];
+    const url = new URL(requestUrl);
+    expect(url.hostname).toBe("graph.instagram.com");
+    expect(url.pathname).toMatch(/\/recipient_test$/);
+    expect(url.searchParams.get("fields")).toBe("is_user_follow_business");
+    expect(options.cache).toBe("no-store");
+    expect(options.headers["Cache-Control"]).toBe("no-cache");
+  });
+  it("checks Meta again after a previously confirmed follow changes to false", async () => {
+    respond({ is_user_follow_business: true });
+    respond({ is_user_follow_business: false });
+    const args = { context: { provider: "META" as const, accessToken: "fake-meta" }, recipientId: "recipient_test" };
+    expect(await getUserFollowStatus(args)).toBe(true);
+    expect(await getUserFollowStatus(args)).toBe(false);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+  it("does not allow a Meta error response or failed request to authorize a gift", async () => {
+    respond({ is_user_follow_business: true }, 500);
+    const args = { context: { provider: "META" as const, accessToken: "fake-meta" }, recipientId: "recipient_test" };
+    expect(await getUserFollowStatus(args)).toBeNull();
+    fetchMock.mockRejectedValueOnce(new Error("connection failed"));
+    expect(await getUserFollowStatus(args)).toBeNull();
+  });
   it("preserves direct Meta requests", async () => {
     respond({ data: [{ id: "media" }] });
     expect(

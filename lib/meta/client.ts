@@ -271,10 +271,15 @@ export async function getUserFollowStatus(
   try {
     const response = await fetch(url.toString(), {
       method: "GET",
-      headers: { Authorization: `Bearer ${accessToken}` },
+      cache: "no-store",
+      headers: { Authorization: `Bearer ${accessToken}`, "Cache-Control": "no-cache" },
     });
     if (!response.ok) return null;
     const data = await response.json();
+    // A following relationship is directional. Only Meta's explicit
+    // user -> business boolean can authorize a gift; reverse follows,
+    // malformed responses and even HTTP-200 error envelopes cannot.
+    if (!data || typeof data !== "object" || Array.isArray(data) || data.error) return null;
     return typeof data?.is_user_follow_business === "boolean"
       ? data.is_user_follow_business
       : null;
