@@ -2,6 +2,10 @@ import { describe, expect, it } from "vitest";
 import { diagnosticLevel, diagnosticMessage, diagnosticSource } from "../lib/i18n/diagnostics";
 
 describe("diagnostic summaries", () => {
+  it("keeps an existing Chinese explanation visible", () => {
+    const message = "尚未確認已追蹤，本次未發送禮物。";
+    expect(diagnosticMessage(message, "zh-TW")).toEqual({ summary: message, details: message });
+  });
   it("explains a rejected gift without claiming the recipient is not following", () => {
     const original = "Follow gate rejected a button tap";
     const result = diagnosticMessage(original, "zh-TW");

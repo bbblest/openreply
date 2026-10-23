@@ -1,7 +1,7 @@
 "use client";
 
 import { createContext, useContext, useEffect, useMemo } from "react";
-import { createI18n, DEFAULT_LOCALE, type Locale } from "./index";
+import { createI18n, DEFAULT_LOCALE, resolveLocale, type Locale } from "./index";
 
 // Shared controls use the same default even outside a localized layout.
 const I18nContext = createContext(createI18n(DEFAULT_LOCALE));
@@ -13,19 +13,20 @@ export function I18nProvider({
   locale: Locale;
   children: React.ReactNode;
 }) {
-  const value = useMemo(() => createI18n(locale), [locale]);
+  const interfaceLocale = resolveLocale(locale);
+  const value = useMemo(() => createI18n(interfaceLocale), [interfaceLocale]);
 
   useEffect(() => {
     const previous = document.documentElement.lang;
-    document.documentElement.lang = locale;
+    document.documentElement.lang = interfaceLocale;
     return () => {
       document.documentElement.lang = previous;
     };
-  }, [locale]);
+  }, [interfaceLocale]);
 
   return (
     <I18nContext.Provider value={value}>
-      <div lang={locale} className="contents">
+      <div lang={interfaceLocale} className="contents">
         {children}
       </div>
     </I18nContext.Provider>

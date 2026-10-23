@@ -2,7 +2,10 @@ import { EMAIL_PROVIDER_ID, signIn } from "@/lib/auth";
 import { getI18n } from "@/lib/i18n/server";
 import { getCampaignTemplate } from "@/lib/templates/campaign-templates";
 import { DemoNotice } from "@/components/demo-notice";
+import LoginError from "@/components/login-error";
 import { isPublicDemoHost } from "@/lib/env";
+import { AuthError } from "next-auth";
+import { redirect } from "next/navigation";
 
 const GITHUB_URL = "https://github.com/diwenne/openreply";
 const SETUP_DOCS_URL = `${GITHUB_URL}/blob/main/docs/setup.md`;
@@ -22,9 +25,10 @@ export default async function LoginPage({
     checkEmail?: string;
     callbackUrl?: string;
     template?: string;
+    error?: string;
   }>;
 }) {
-  const { t } = await getI18n();
+  const { t, label } = await getI18n();
   if (await isPublicDemoHost()) {
     return (
       <div className="min-h-screen flex items-center justify-center px-6">
@@ -63,10 +67,18 @@ export default async function LoginPage({
 
   async function sendMagicLink(formData: FormData) {
     "use server";
-    await signIn(EMAIL_PROVIDER_ID, {
-      email: String(formData.get("email") ?? ""),
-      redirectTo: callbackUrl,
-    });
+    try {
+      await signIn(EMAIL_PROVIDER_ID, {
+        email: String(formData.get("email") ?? ""),
+        redirectTo: callbackUrl,
+      });
+    } catch (error) {
+      // Auth.js server actions throw authentication errors directly. Keep the
+      // framework's successful redirect intact and localize only auth failures.
+      if (!(error instanceof AuthError)) throw error;
+      const errorParams = new URLSearchParams({ error: error.type, callbackUrl });
+      redirect(`/login?${errorParams.toString()}`);
+    }
   }
 
   return (
@@ -78,7 +90,7 @@ export default async function LoginPage({
           </h1>
           <p className="text-muted text-sm leading-relaxed mt-2">
             {selectedTemplate
-              ? t("Sign in to use the {name} template.", { name: selectedTemplate.title })
+              ? t("Sign in to use the {name} template.", { name: label(selectedTemplate.title) })
               : t("Sign in by email, then connect your Instagram professional account.")}
           </p>
         </div>
@@ -86,13 +98,14 @@ export default async function LoginPage({
         <DemoNotice variant="panel" />
 
         <div className="panel rounded p-8 shadow-black/40">
+          <LoginError code={params.error} />
           {selectedTemplate && !checkEmail && (
             <div className="mb-5 border border-accent/20 bg-accent/10 p-4">
               <p className="text-xs font-semibold uppercase tracking-wide text-accent">
                 {t("Template selected")}
               </p>
               <p className="mt-2 text-sm font-semibold text-foreground">
-                {selectedTemplate.title}
+                {label(selectedTemplate.title)}
               </p>
             </div>
           )}

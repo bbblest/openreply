@@ -1,10 +1,10 @@
 "use server";
 
 import { cookies } from "next/headers";
-import { isLocale, LOCALE_COOKIE } from "./index";
+import { LOCALE_COOKIE } from "./index";
 
 export async function setLocale(value: string) {
-  if (!isLocale(value)) throw new Error("Unsupported locale");
+  if (value !== "zh-TW") throw new Error("本系統介面固定使用繁體中文。");
   const cookieStore = await cookies();
   cookieStore.set(LOCALE_COOKIE, value, {
     path: "/",

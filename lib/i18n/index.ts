@@ -10,7 +10,8 @@ export function isLocale(value: unknown): value is Locale {
 }
 
 export function resolveLocale(value: unknown): Locale {
-  return isLocale(value) ? value : DEFAULT_LOCALE;
+  // This deployment is fixed to Traditional Chinese, including legacy cookies.
+  return value === "zh-TW" ? value : DEFAULT_LOCALE;
 }
 
 type Placeholders<S extends string> =
@@ -50,6 +51,14 @@ const labels: Record<string, StaticMessageKey> = {
   Fri: "Fri",
   Sat: "Sat",
   Sun: "Sun",
+  "DTC Product Link Drop": "DTC Product Link Drop",
+  "Real Estate Lead Form": "Real Estate Lead Form",
+  "Fitness Plan Download": "Fitness Plan Download",
+  "Course Webinar Invite": "Course Webinar Invite",
+  "Beauty Service Price List": "Beauty Service Price List",
+  "Restaurant Menu And Reservation": "Restaurant Menu And Reservation",
+  "Event RSVP Campaign": "Event RSVP Campaign",
+  "Creator Media Kit Reply": "Creator Media Kit Reply",
 };
 
 export function createI18n(locale: Locale) {

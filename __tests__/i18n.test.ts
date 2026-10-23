@@ -8,7 +8,7 @@ describe("interface translations", () => {
       expect(resolveLocale(value)).toBe("zh-TW");
     }
     expect(resolveLocale("zh-TW")).toBe("zh-TW");
-    expect(resolveLocale("en")).toBe("en");
+    expect(resolveLocale("en")).toBe("zh-TW");
   });
 
   it("renders both interface languages from the same keys", () => {

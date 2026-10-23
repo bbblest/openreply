@@ -22,6 +22,8 @@ describe("language preference", () => {
   it("uses Traditional Chinese when the saved preference is missing or invalid", async () => {
     store.get.mockReturnValue({ value: "unsupported" });
     expect((await getI18n()).locale).toBe("zh-TW");
+    store.get.mockReturnValue({ value: "en" });
+    expect((await getI18n()).t("Settings")).toBe("設定");
     store.get.mockReturnValue(undefined);
     expect((await getI18n()).locale).toBe("zh-TW");
   });
@@ -38,18 +40,14 @@ describe("language preference", () => {
     });
   });
 
-  it("allows switching back to English during local development", async () => {
+  it("keeps Traditional Chinese fixed even during local development", async () => {
     vi.stubEnv("NODE_ENV", "development");
-    await setLocale("en");
-    expect(store.set).toHaveBeenCalledWith(
-      LOCALE_COOKIE,
-      "en",
-      expect.objectContaining({ secure: false }),
-    );
+    await expect(setLocale("en")).rejects.toThrow("本系統介面固定使用繁體中文。");
+    expect(store.set).not.toHaveBeenCalled();
   });
 
   it("rejects an unsupported locale without writing cookies", async () => {
-    await expect(setLocale("en; path=/")).rejects.toThrow("Unsupported locale");
+    await expect(setLocale("en; path=/")).rejects.toThrow("本系統介面固定使用繁體中文。");
     expect(store.set).not.toHaveBeenCalled();
   });
 });

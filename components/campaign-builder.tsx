@@ -13,6 +13,7 @@
  */
 
 import { useI18n } from "@/lib/i18n/provider";
+import InterfaceError from "@/components/interface-error";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import AccountSelect, { type AccountOption } from "@/components/account-select";
@@ -416,7 +417,7 @@ export default function CampaignBuilder({ mode, campaignId, followPolicy, emailP
   /* eslint-enable react-hooks/set-state-in-effect */
 
   const username =
-    accounts.find((a) => a.id === selectedAccountId)?.username ?? "yourbrand";
+    accounts.find((a) => a.id === selectedAccountId)?.username ?? t("Your account");
 
   function handlePostSelect(
     id: string,
@@ -449,7 +450,7 @@ export default function CampaignBuilder({ mode, campaignId, followPolicy, emailP
     setSaving(true);
 
     const payload = {
-      name: name.trim() || `Campaign for @${username}`,
+      name: name.trim() || t("Campaign for @{username}", { username }),
       instagramAccountId: selectedAccountId,
       postId: triggerScope === "specific" ? postId : null,
       postUrl: triggerScope === "specific" ? postUrl : null,
@@ -683,9 +684,7 @@ export default function CampaignBuilder({ mode, campaignId, followPolicy, emailP
       {/* Left: controls */}
       <div className="space-y-8 min-w-0">
         {error && (
-          <div className="rounded border border-error/20 bg-error/10 p-3 text-sm text-error">
-            {error}
-          </div>
+          <InterfaceError className="rounded border border-error/20 bg-error/10 p-3 text-sm text-error" message={error} fallback="Failed to save campaign" />
         )}
 
         <div className="space-y-3">
@@ -915,7 +914,7 @@ export default function CampaignBuilder({ mode, campaignId, followPolicy, emailP
                   maxLength={20}
                 />
                 <p className="text-xs text-muted">
-                  {requireEmail ? "留言與關鍵字私訊都先收到追蹤提示。按鈕確認追蹤後，還須填寫 Email 並到信箱確認，才會送出禮物。" : t("Comments and keyword DMs receive this prompt first. After they tap the button, Instagram must confirm the follow before the gift is sent.")}
+                  {requireEmail ? "留言與關鍵字私訊都先收到追蹤提示。按鈕確認追蹤後，還須填寫電子信箱並到信箱確認，才會送出禮物。" : t("Comments and keyword DMs receive this prompt first. After they tap the button, Instagram must confirm the follow before the gift is sent.")}
                 </p>
                 <p className="text-xs text-muted">
                   {t("If they are not following or verification is unavailable, keep showing the prompt and withhold the gift.")}
@@ -930,21 +929,21 @@ export default function CampaignBuilder({ mode, campaignId, followPolicy, emailP
           </div>
         </Section>
 
-        <Section title="Email 確認與雙邊送禮">
+        <Section title="電子信箱確認與雙邊送禮">
           <div className="space-y-3 rounded-lg border border-border p-3">
             <div className="flex items-center justify-between gap-3">
-              <span className="text-sm text-foreground">領禮前須填寫並確認 Email</span>
+              <span className="text-sm text-foreground">領禮前須填寫並確認電子信箱</span>
               <Toggle on={requireEmail} onToggle={() => setRequireEmail(!requireEmail)} disabled={emailPolicy?.required === true} />
             </div>
-            {requireEmail && <p className="text-xs leading-relaxed text-muted">確認追蹤 → 填寫 Email → 到信箱確認 → 透過 Instagram 私訊與 Email 傳送禮物。確認完成前不提供禮物內容或連結。</p>}
+            {requireEmail && <p className="text-xs leading-relaxed text-muted">確認追蹤 → 填寫電子信箱 → 到信箱確認 → 透過 Instagram 私訊與電子郵件傳送禮物。確認完成前不提供禮物內容或連結。</p>}
             {requireEmail && <p className="text-xs leading-relaxed text-muted">後續內容與活動通知由領取者另外選擇，不預先勾選；未同意也能領取本次禮物。</p>}
-            {emailPolicy?.required && <p className="text-xs text-muted">所有活動皆須確認 Email，此要求已固定啟用。</p>}
+            {emailPolicy?.required && <p className="text-xs text-muted">所有活動皆須確認電子信箱，此要求已固定啟用。</p>}
           </div>
         </Section>
 
-        <Section title={requireEmail ? "確認追蹤與 Email 後，才傳送禮物" : requireFollow ? t("After follow confirmation, send the gift") : t("And then, they will get")}>
+        <Section title={requireEmail ? "確認追蹤與電子信箱後，才傳送禮物" : requireFollow ? t("After follow confirmation, send the gift") : t("And then, they will get")}>
           <div className="rounded-lg border border-border p-3 space-y-2">
-            <span className="text-sm text-foreground">{requireEmail ? "Instagram 私訊與 Email 的禮物內容" : t("a DM with a link")}</span>
+            <span className="text-sm text-foreground">{requireEmail ? "Instagram 私訊與電子郵件的禮物內容" : t("a DM with a link")}</span>
             <textarea
               value={dmMessage}
               onChange={(e) => setDmMessage(e.target.value)}

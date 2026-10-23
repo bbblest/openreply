@@ -10,6 +10,7 @@
  */
 
 import { useI18n } from "@/lib/i18n/provider";
+import InterfaceError from "@/components/interface-error";
 import { useEffect, useState } from "react";
 import { readCache, writeCache } from "@/lib/client-cache";
 
@@ -115,7 +116,7 @@ export default function PostPicker({
   if (error) {
     return (
       <div className="text-center py-8">
-        <p className="text-sm text-muted">{error === "Failed to load posts" ? t("Failed to load posts") : error}</p>
+        <InterfaceError className="text-sm text-muted" message={error} fallback="Failed to load posts" />
         <p className="text-xs text-zinc-500 mt-1">{t("Connect your Instagram account first")}</p>
       </div>
     );
@@ -140,7 +141,15 @@ export default function PostPicker({
 
   return (
     <div className="space-y-2">
-      {limitations.map(note => <p key={note} className="text-xs text-muted">{note}</p>)}
+      {limitations.length > 0 && (
+        <div className="text-xs text-muted">
+          <p>{t("Some post data is unavailable from the connection provider.")}</p>
+          <details className="mt-1">
+            <summary className="cursor-pointer">{t("Technical details")}</summary>
+            {limitations.map(note => <p key={note} className="mt-1 break-words">{note}</p>)}
+          </details>
+        </div>
+      )}
       <div className="flex items-center justify-between gap-2">
         <input
           value={query}

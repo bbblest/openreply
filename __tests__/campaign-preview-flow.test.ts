@@ -102,14 +102,14 @@ describe("campaign follow-first preview", () => {
       const html = renderToStaticMarkup(createElement(CampaignPreview, { ...props, tab, requireEmail: true }));
       const followCheck = html.indexOf("Instagram 確認已追蹤後");
       const collectEmail = html.indexOf("填寫 Email");
-      const emailCheck = html.indexOf("Email 確認完成後");
+      const emailCheck = html.indexOf("電子信箱確認完成後");
       const gift = html.indexOf("確認後的禮物內容");
       expect(followCheck).toBeGreaterThan(-1);
       expect(collectEmail).toBeGreaterThan(followCheck);
       expect(emailCheck).toBeGreaterThan(collectEmail);
       expect(gift).toBeGreaterThan(emailCheck);
       expect(html.slice(0, emailCheck)).not.toContain("https://example.test/gift");
-      expect(html).toContain("並寄送一份至 Email");
+      expect(html).toContain("並寄送一份至電子信箱");
       expect(html).not.toContain("舊版多餘開場");
     },
   );
@@ -128,8 +128,8 @@ describe("campaign follow-first preview", () => {
         },
       },
     }));
-    expect(html).toContain("所有活動皆須確認 Email，此要求已固定啟用");
-    expect(html).toContain("確認追蹤與 Email 後，才傳送禮物");
+    expect(html).toContain("所有活動皆須確認電子信箱，此要求已固定啟用");
+    expect(html).toContain("確認追蹤與電子信箱後，才傳送禮物");
     expect(html).toContain("不預先勾選；未同意也能領取本次禮物");
     expect(html).toContain("先收到追蹤提示");
     expect(html).not.toContain("開場私訊");

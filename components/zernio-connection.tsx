@@ -1,7 +1,6 @@
 "use client";
 
-'use client';
-
+import InterfaceError from "@/components/interface-error";
 import { useI18n } from "@/lib/i18n/provider";
 import { useCallback, useEffect, useState } from 'react';
 import Image from 'next/image';
@@ -59,7 +58,7 @@ export function ZernioConnection({ canManage }: { canManage: boolean }) {
       <p className="mt-4 text-sm leading-6">{t("Connect Instagram without creating your own Meta developer app. Zernio is a paid service and an OpenReply sponsor. Your campaigns and hosting stay in OpenReply.")}</p>
       <p className="mt-2 flex flex-wrap gap-x-4 gap-y-2 text-sm"><a className="underline underline-offset-4" href={zernioLink({ path: '/signup', placement: 'settings-signup' })} target="_blank" rel="noopener noreferrer">{t("Get a Zernio API key")}</a><a className="underline underline-offset-4" href={zernioLink({ path: '/pricing', placement: 'settings-pricing' })} target="_blank" rel="noopener noreferrer">{t("View pricing")}</a></p>
       {!canManage ? <p className="mt-4 text-sm">{t("Ask your workspace owner or admin to configure Zernio.")}</p> : <>
-        {error && <p role="alert" className="mt-4 rounded border border-error/30 bg-white p-3 text-sm text-error">{error === "Could not load connection." ? t("Could not load connection.") : error}</p>}
+        {error && <InterfaceError className="mt-4 rounded border border-error/30 bg-white p-3 text-sm text-error" message={error} fallback="Could not update connection." />}
         {!data?.configured ? <form className="mt-5 space-y-3" onSubmit={e => { e.preventDefault(); void act({ method: 'POST', body: { apiKey } }); }}>
           <label className="block text-sm font-medium" htmlFor="zernio-api-key">{t("Zernio API key")}</label>
           <input id="zernio-api-key" type="password" autoComplete="off" value={apiKey} onChange={e => setApiKey(e.target.value)} required className="w-full rounded-lg border border-zernio-border bg-white px-3 py-2 text-sm" />

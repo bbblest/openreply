@@ -1,6 +1,7 @@
 "use client";
 
 import { useI18n } from "@/lib/i18n/provider";
+import InterfaceError from "@/components/interface-error";
 import { useState } from "react";
 
 interface InvitationAcceptCardProps {
@@ -56,7 +57,7 @@ export default function InvitationAcceptCard({
       >
         {busy ? t("Accepting...") : t("Accept invitation")}
       </button>
-      {message && <p className="text-sm text-error">{message}</p>}
+      {message && <InterfaceError className="text-sm text-error" message={message} fallback="Could not accept invitation" />}
       <p className="text-xs text-muted">
         {t("Use the magic link account for")} {invitedEmail}.
       </p>

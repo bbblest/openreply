@@ -35,7 +35,7 @@ const summaries: Record<string, StaticMessageKey> = {
 // Keep the original available for diagnosis. Do not guess whether an unknown
 // follow status means the recipient has not followed the account.
 export function diagnosticMessage(message: string, locale: Locale) {
-  if (locale === "en") return { summary: message, details: message };
+  if (locale === "en" || /[\u3400-\u9fff]/u.test(message)) return { summary: message, details: message };
   let key: StaticMessageKey = "System event recorded. Open technical details for the original message.";
   if (Object.hasOwn(summaries, message)) key = summaries[message];
   else if (message.startsWith("Token refresh failed for @")) key = "Instagram token refresh failed.";

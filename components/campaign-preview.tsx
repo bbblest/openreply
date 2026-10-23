@@ -420,9 +420,9 @@ function DmScreen({
               </div>
             </div>
             <div className="rounded-lg border border-zinc-700 px-3 py-2 text-center text-[11px] leading-relaxed text-zinc-300">
-              填寫 Email → 收到驗證信 → 按信中連結並確認
+              填寫電子信箱 → 收到驗證信 → 按信中連結並確認
             </div>
-            <p className="py-1 text-center text-[11px] text-zinc-400">Email 確認完成後，才傳送下方禮物，並寄送一份至 Email。</p>
+            <p className="py-1 text-center text-[11px] text-zinc-400">電子信箱確認完成後，才傳送下方禮物，並寄送一份至電子信箱。</p>
           </>
         )}
         {(() => {
@@ -581,7 +581,7 @@ export default function CampaignPreview(props: CampaignPreviewProps) {
 
       {(props.requireFollow || props.requireEmail) && (activeTab === "dm" || activeTab === "dmTrigger") && (
         <p className="max-w-sm text-center text-xs text-muted">
-          {props.requireEmail ? "成功流程預覽：確認追蹤、填寫 Email 並到信箱完成確認後，才會透過 Instagram 私訊與 Email 傳送禮物；前面步驟不提供禮物連結。" : t("Success preview: the gift appears only after follow confirmation. If the follow cannot be confirmed, only the prompt is sent.")}
+          {props.requireEmail ? "成功流程預覽：確認追蹤、填寫電子信箱並到信箱完成確認後，才會透過 Instagram 私訊與電子郵件傳送禮物；前面步驟不提供禮物連結。" : t("Success preview: the gift appears only after follow confirmation. If the follow cannot be confirmed, only the prompt is sent.")}
         </p>
       )}
 

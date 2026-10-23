@@ -39,6 +39,14 @@ const MESSAGES: Record<string, { tone: Tone; title: StaticMessageKey; detail: St
   },
 };
 
+const settingLabels: Record<string, StaticMessageKey> = {
+  INSTAGRAM_APP_ID: "Instagram application ID",
+  INSTAGRAM_APP_SECRET: "Instagram application secret",
+  ENCRYPTION_KEY: "Data encryption key",
+  NEXTAUTH_SECRET: "Sign-in security key",
+  NEXTAUTH_URL: "Application base URL",
+};
+
 export function InstagramConnectNotice() {
   const { t } = useI18n();
   const searchParams = useSearchParams();
@@ -54,25 +62,25 @@ export function InstagramConnectNotice() {
     return (
       <Notice tone="error" title={t("Instagram app not configured")}>
         <p>
-          {t("Set")}{" "}
-          {missing.length > 0
-            ? t("these environment variables")
-            : t("the required environment variables")}{" "}
-          {t("and restart the server:")}
+          {t("Contact the administrator to complete the missing connection settings.")}
         </p>
         {missing.length > 0 && (
           <ul className="mt-2 space-y-1">
             {missing.map((name) => (
-              <li key={name} className="font-mono text-xs">
-                {name}
+              <li key={name} className="text-xs">
+                {t(Object.hasOwn(settingLabels, name) ? settingLabels[name] : "Other server setting")}
               </li>
             ))}
           </ul>
         )}
-        <p className="mt-2">
-          {t("See")} <span className="font-mono text-xs">docs/setup.md</span> {t("for how to obtain each value. Note that")}{" "}
-          <span className="font-mono text-xs">ENCRYPTION_KEY</span> {t("must be a 64-character hex string.")}
-        </p>
+        <details className="mt-2 text-xs">
+          <summary className="cursor-pointer">{t("Technical details")}</summary>
+          <p className="mt-1 break-words font-mono">{missing.join(", ")}</p>
+          <p className="mt-2">
+            {t("See")} <span className="font-mono">docs/setup.md</span> {t("for how to obtain each value. Note that")}{" "}
+            <span className="font-mono">ENCRYPTION_KEY</span> {t("must be a 64-character hex string.")}
+          </p>
+        </details>
       </Notice>
     );
   }
@@ -86,9 +94,10 @@ export function InstagramConnectNotice() {
           {t("Instagram accepted the login but the connection could not be completed. This is usually a mismatched redirect URI or an app that is missing the required permissions.")}
         </p>
         {reason && (
-          <p className="mt-2 font-mono text-xs break-words opacity-80">
-            {reason}
-          </p>
+          <details className="mt-2 text-xs opacity-80">
+            <summary className="cursor-pointer">{t("Technical details")}</summary>
+            <p className="mt-1 font-mono break-words">{reason}</p>
+          </details>
         )}
       </Notice>
     );
