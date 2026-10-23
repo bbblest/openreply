@@ -1,10 +1,18 @@
 /** Server-side policy for deployments that only deliver gifts to followers. */
 export function isFollowRequiredByDeployment(): boolean {
-  return process.env.REQUIRE_CONFIRMED_FOLLOW === "true";
+  return process.env.REQUIRE_CONFIRMED_FOLLOW === "true" || isEmailRequiredByDeployment();
 }
 
-export function requireConfirmedFollow(automation: { requireFollow?: boolean }): boolean {
-  return isFollowRequiredByDeployment() || automation.requireFollow === true;
+export function isEmailRequiredByDeployment(): boolean {
+  return process.env.REQUIRE_VERIFIED_EMAIL === "true";
+}
+
+export function requireVerifiedEmail(automation: { requireEmail?: boolean }): boolean {
+  return isEmailRequiredByDeployment() || automation.requireEmail === true;
+}
+
+export function requireConfirmedFollow(automation: { requireFollow?: boolean; requireEmail?: boolean }): boolean {
+  return isFollowRequiredByDeployment() || automation.requireFollow === true || requireVerifiedEmail(automation);
 }
 
 // Unverified recipients and public comments must never receive configurable
@@ -12,10 +20,15 @@ export function requireConfirmedFollow(automation: { requireFollow?: boolean }):
 export const SAFE_FOLLOW_MESSAGES = {
   publicReply: "領取方式會透過私訊提供，請先追蹤本帳號並查看訊息邀請。",
   opening: "領取禮物前，請先追蹤本帳號，再按下方按鈕確認。",
-  prompt: "請先追蹤本帳號，再按下方按鈕。系統確認追蹤成功後才會傳送禮物。",
+  prompt: "謝謝妳的留言，這份IG禮物是送給，追蹤的朋友，\n追蹤完成點擊下方連結立即領取",
+  emailPrompt: "謝謝妳的留言，這份IG禮物是送給，追蹤的朋友，\n追蹤完成點擊下方按鈕，再填寫並確認 Email，即可領取禮物。",
+  retryPrompt: "還沒確認到你的追蹤喔，追蹤後再按一次『確認追蹤』。",
   unknown: "目前還無法確認追蹤狀態，禮物尚未發送。若已追蹤，請先回覆任意文字，稍等後再按下方按鈕確認。",
-  button: "確認追蹤",
-  acknowledgement: "正在確認追蹤狀態，請稍候；確認成功後才會傳送禮物。",
+  button: "我已完成追蹤",
+  retryButton: "確認追蹤",
+  acknowledgement: "正在確認，請稍候一下喔！",
+  emailRequest: "已確認追蹤！請填寫 Email，並到信箱按「確認領取」。完成後，禮物會透過 IG 私訊和 Email 送給你。",
+  emailButton: "填寫 Email",
 } as const;
 
 /** Apply last when reading or saving campaigns so stored settings match delivery. */
@@ -24,11 +37,12 @@ export function deploymentFollowOverrides() {
 
   return {
     requireFollow: true,
+    ...(isEmailRequiredByDeployment() ? { requireEmail: true } : {}),
     publicReplyMessage: SAFE_FOLLOW_MESSAGES.publicReply,
     publicReplyMessages: [SAFE_FOLLOW_MESSAGES.publicReply],
     openingDmMessage: SAFE_FOLLOW_MESSAGES.opening,
     openingDmButtonLabel: SAFE_FOLLOW_MESSAGES.button,
-    followPromptMessage: SAFE_FOLLOW_MESSAGES.prompt,
+    followPromptMessage: isEmailRequiredByDeployment() ? SAFE_FOLLOW_MESSAGES.emailPrompt : SAFE_FOLLOW_MESSAGES.prompt,
     followPromptButtonLabel: SAFE_FOLLOW_MESSAGES.button,
   };
 }

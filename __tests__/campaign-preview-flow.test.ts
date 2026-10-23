@@ -95,4 +95,44 @@ describe("campaign follow-first preview", () => {
     expect(html).toContain("所有活動皆須確認追蹤");
     expect(html).toContain("留言與關鍵字私訊都會先收到這則提示");
   });
+
+  it.each(["dm", "dmTrigger"] as const)(
+    "%s places Email collection and confirmation before any gift content",
+    (tab) => {
+      const html = renderToStaticMarkup(createElement(CampaignPreview, { ...props, tab, requireEmail: true }));
+      const followCheck = html.indexOf("Instagram 確認已追蹤後");
+      const collectEmail = html.indexOf("填寫 Email");
+      const emailCheck = html.indexOf("Email 確認完成後");
+      const gift = html.indexOf("確認後的禮物內容");
+      expect(followCheck).toBeGreaterThan(-1);
+      expect(collectEmail).toBeGreaterThan(followCheck);
+      expect(emailCheck).toBeGreaterThan(collectEmail);
+      expect(gift).toBeGreaterThan(emailCheck);
+      expect(html.slice(0, emailCheck)).not.toContain("https://example.test/gift");
+      expect(html).toContain("並寄送一份至 Email");
+      expect(html).not.toContain("舊版多餘開場");
+    },
+  );
+
+  it("enforces the Email flow in a new editor even when the ordinary follow option is off", () => {
+    const html = renderToStaticMarkup(createElement(CampaignBuilder, {
+      mode: "new",
+      emailPolicy: { required: true },
+      followPolicy: {
+        required: false,
+        messages: {
+          publicReply: "請查看私訊",
+          opening: "開場提示",
+          prompt: "追蹤提示",
+          button: "確認追蹤",
+        },
+      },
+    }));
+    expect(html).toContain("所有活動皆須確認 Email，此要求已固定啟用");
+    expect(html).toContain("確認追蹤與 Email 後，才傳送禮物");
+    expect(html).toContain("不預先勾選；未同意也能領取本次禮物");
+    expect(html).toContain("先收到追蹤提示");
+    expect(html).not.toContain("開場私訊");
+    expect(html.match(/role="switch" aria-checked="true" disabled=""/g)).toHaveLength(2);
+  });
 });

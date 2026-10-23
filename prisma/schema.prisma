@@ -85,6 +85,8 @@ model Workspace {
   linkClicks        LinkClick[]
   webhookEvents     WebhookEvent[]
   operationalEvents OperationalEvent[]
+  giftContacts      GiftContact[]
+  giftClaims        GiftClaim[]
 
   @@index([ownerId])
 }
@@ -191,6 +193,7 @@ model Automation {
   openingDmButtonLabel String?
   linkButtonLabel      String?
   requireFollow           Boolean @default(false)
+  requireEmail            Boolean @default(false)
   followPromptMessage     String?
   followPromptButtonLabel String?
   followUpEnabled Boolean @default(false)
@@ -214,6 +217,7 @@ model Automation {
   dmLogs           DmLog[]
   trackedLinks     TrackedLink[]
   linkClicks       LinkClick[]
+  giftClaims       GiftClaim[]
 
   @@index([workspaceId])
   @@index([instagramAccountId])
@@ -415,4 +419,66 @@ model ZernioConnection {
 model PostbackDelivery {
   id String @id
   createdAt DateTime @default(now())
+}
+
+// Audience records are separate from the users allowed to sign into the admin.
+model GiftContact {
+  id                 String @id @default(cuid())
+  workspaceId        String
+  email              String
+  emailVerifiedAt    DateTime
+  marketingConsentAt DateTime?
+  unsubscribedAt     DateTime?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  claims GiftClaim[]
+  @@unique([workspaceId, email])
+}
+
+model GiftClaim {
+  id                      String @id @default(cuid())
+  workspaceId             String
+  automationId            String
+  recipientId             String
+  recipientName           String?
+  followConfirmedAt       DateTime
+  expiresAt               DateTime
+  email                   String?
+  emailVersion            Int @default(0)
+  verificationTokenHash   String? @unique
+  verificationExpiresAt   DateTime?
+  verificationSentAt      DateTime?
+  verificationCount       Int @default(0)
+  verificationWindowStart DateTime @default(now())
+  verificationStatus      GiftDeliveryStatus @default(PENDING)
+  emailVerifiedAt         DateTime?
+  marketingConsent        Boolean @default(false)
+  contactId               String?
+  igStatus                GiftDeliveryStatus @default(PENDING)
+  emailStatus             GiftDeliveryStatus @default(PENDING)
+  igSentAt                DateTime?
+  emailSentAt             DateTime?
+  igAttempts              Int @default(0)
+  emailAttempts           Int @default(0)
+  lastError               String?
+  nextAttemptAt           DateTime @default(now())
+  leaseId                 String?
+  leaseUntil              DateTime?
+  createdAt               DateTime @default(now())
+  updatedAt               DateTime @updatedAt
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  automation Automation @relation(fields: [automationId], references: [id], onDelete: Cascade)
+  contact GiftContact? @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  @@unique([automationId, recipientId])
+  @@index([workspaceId, createdAt])
+  @@index([nextAttemptAt])
+}
+
+enum GiftDeliveryStatus {
+  PENDING
+  SENDING
+  SENT
+  FAILED
+  UNCONFIRMED
 }

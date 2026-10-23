@@ -2,11 +2,13 @@ import { createDMWorker } from "@/lib/queue/dm-worker";
 import { recordWorkerHeartbeat } from "@/lib/ops/worker-health";
 import { reconcileComments } from "@/lib/polling/comment-reconciler";
 import { attachPendingNextReels } from "@/lib/automation/attach-next-reel";
+import { reconcileGiftDeliveries } from "@/lib/gifts/claims";
 import os from "node:os";
 
 const worker = createDMWorker();
 const startedAt = new Date().toISOString();
 const HEARTBEAT_INTERVAL_MS = 30_000;
+const GIFT_RECONCILE_INTERVAL_MS = 60_000;
 // Polling safety net for comments that webhooks miss. Runs in the worker because
 // it must fire every few minutes and Vercel's free crons only run once a day.
 const POLL_INTERVAL_MS = Number(
@@ -48,10 +50,26 @@ async function poll() {
 setTimeout(() => void poll(), 10_000);
 const pollTimer = setInterval(() => void poll(), POLL_INTERVAL_MS);
 
+let giftReconcileRunning = false;
+async function reconcileGifts() {
+  if (giftReconcileRunning) return;
+  giftReconcileRunning = true;
+  try {
+    await reconcileGiftDeliveries();
+  } catch {
+    console.error("[DM Worker] Gift delivery reconciliation failed; will retry.");
+  } finally {
+    giftReconcileRunning = false;
+  }
+}
+void reconcileGifts();
+const giftReconcileTimer = setInterval(() => void reconcileGifts(), GIFT_RECONCILE_INTERVAL_MS);
+
 async function shutdown(signal: string) {
   console.log(`[DM Worker] ${signal} received, closing worker`);
   clearInterval(heartbeatTimer);
   clearInterval(pollTimer);
+  clearInterval(giftReconcileTimer);
   await worker.close();
   process.exit(0);
 }

@@ -17,27 +17,27 @@ export default function LegalShell({
   children,
 }: LegalShellProps) {
   return (
-    <main className="min-h-screen bg-background text-foreground">
+    <main lang="zh-Hant" className="min-h-screen bg-background text-foreground">
       <header className="border-b border-border">
         <div className="mx-auto flex h-16 max-w-5xl items-center justify-between px-5">
           <Link href="/" className="flex items-center gap-3">
             <span>
               <span className="block text-lg font-bold text-foreground">{SERVICE_NAME}</span>
-              <span className="block text-xs text-muted">OpenReply self-hosted</span>
+              <span className="block text-xs text-muted">OpenReply 自架服務</span>
             </span>
           </Link>
           <Link
             href="/login"
             className="text-sm font-semibold text-muted transition hover:text-foreground"
           >
-            Sign in
+            登入後台
           </Link>
         </div>
       </header>
 
       <article className="mx-auto max-w-3xl px-5 py-14">
         <p className="text-sm font-semibold uppercase text-accent">
-          Last updated {updatedAt}
+          最後更新：{updatedAt}
         </p>
         <h1 className="mt-4 text-4xl font-black text-foreground sm:text-5xl">
           {title}
@@ -49,14 +49,14 @@ export default function LegalShell({
       </article>
       <footer className="border-t border-border">
         <div className="mx-auto max-w-3xl space-y-4 px-5 py-8 text-sm text-muted">
-          <nav aria-label="Service information" className="flex flex-wrap gap-x-5 gap-y-2">
-            <Link href="/privacy" className="hover:text-foreground">Privacy</Link>
-            <Link href="/terms" className="hover:text-foreground">Terms</Link>
-            <Link href="/data-deletion" className="hover:text-foreground">Data deletion</Link>
-            <Link href="/meta-review" className="hover:text-foreground">Meta review notes</Link>
+          <nav aria-label="服務資訊" className="flex flex-wrap gap-x-5 gap-y-2">
+            <Link href="/privacy" className="hover:text-foreground">隱私權說明</Link>
+            <Link href="/terms" className="hover:text-foreground">服務條款</Link>
+            <Link href="/data-deletion" className="hover:text-foreground">資料刪除說明</Link>
+            <Link href="/meta-review" className="hover:text-foreground">Meta 審查說明</Link>
           </nav>
           <p>
-            Service support and data deletion requests:{" "}
+            服務支援與資料刪除申請：{" "}
             <a href={`mailto:${SUPPORT_EMAIL}`} className="text-accent underline">
               {SUPPORT_EMAIL}
             </a>

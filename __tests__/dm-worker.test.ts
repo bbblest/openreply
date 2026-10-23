@@ -16,6 +16,8 @@ const {
   mockQueueAdd,
   mockReserveWorkspaceDMSend,
   mockReleaseWorkspaceDMReservation,
+  mockCreateGiftClaim,
+  mockProcessGiftDelivery,
 } = vi.hoisted(() => ({
   mockPrisma: {
     zernioConnection: { findUnique: vi.fn() },
@@ -53,6 +55,13 @@ const {
   mockQueueAdd: vi.fn(),
   mockReserveWorkspaceDMSend: vi.fn(),
   mockReleaseWorkspaceDMReservation: vi.fn(),
+  mockCreateGiftClaim: vi.fn(),
+  mockProcessGiftDelivery: vi.fn(),
+}));
+
+vi.mock("@/lib/gifts/claims", () => ({
+  createGiftClaim: mockCreateGiftClaim,
+  processGiftDelivery: mockProcessGiftDelivery,
 }));
 
 vi.mock("@/lib/db/client", () => ({
@@ -119,6 +128,7 @@ vi.mock("@/lib/queue/client", () => ({
   POSTBACK_JOB_NAME: "process-postback",
   FOLLOWUP_JOB_NAME: "process-followup",
   MESSAGE_JOB_NAME: "process-message",
+  GIFT_JOB_NAME: "process-gift-claim",
 }));
 
 vi.mock("bullmq", () => {
@@ -140,6 +150,7 @@ vi.mock("bullmq", () => {
 import { MetaApiError, RateLimitError } from "@/lib/meta/client";
 import { createDMWorker } from "../lib/queue/dm-worker";
 import { getRedisConnection } from "@/lib/queue/client";
+import { SAFE_FOLLOW_MESSAGES } from "../lib/instagram/follow-policy";
 
 const usagePeriodStart = new Date("2026-05-01T00:00:00.000Z");
 
@@ -221,6 +232,9 @@ function createMockPostbackJob(
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.stubEnv("REQUIRE_VERIFIED_EMAIL", "false");
+  mockCreateGiftClaim.mockReset().mockResolvedValue({ claimId: "claim_1", url: "https://example.com/gift/claim-token" });
+  mockProcessGiftDelivery.mockReset().mockResolvedValue(undefined);
   mockPrisma.postbackDelivery.create.mockReset().mockResolvedValue({});
   mockPrisma.postbackDelivery.delete.mockReset().mockResolvedValue({});
 
@@ -288,6 +302,122 @@ beforeEach(() => {
     message_id: "msg_006",
   });
   mockGetUserFollowStatus.mockResolvedValue(true);
+});
+
+describe("DM Worker — verified email gate", () => {
+  const emailCampaign = () => ({
+    ...mockAutomation,
+    requireFollow: false,
+    requireEmail: true,
+    dmTriggerEnabled: true,
+    dmMessage: "SECRET_GIFT {link}",
+    followPromptMessage: "SECRET_GIFT https://youtube.com/hidden",
+    followPromptButtonLabel: "SECRET_GIFT",
+    followUpEnabled: true,
+    followUpMessage: "SECRET_GIFT",
+    trackedLinks: [{ slug: "private-gift", label: "領取禮物", destinationUrl: "https://youtube.com/hidden" }],
+    instagramAccount: { ...mockAutomation.instagramAccount, provider: "META", workspaceId: "workspace_123", zernioAccountId: null },
+  });
+
+  beforeEach(() => {
+    vi.stubEnv("REQUIRE_CONFIRMED_FOLLOW", "false");
+    mockPrisma.automation.findMany.mockResolvedValue([emailCampaign()]);
+    mockPrisma.automation.findFirst.mockResolvedValue(emailCampaign());
+    vi.mocked(getRedisConnection).mockReturnValue({ set: vi.fn().mockResolvedValue("OK") } as never);
+  });
+  afterEach(() => vi.unstubAllEnvs());
+
+  it.each(["comment", "message"])("%s starts with safe follow-and-email instructions, without leaking a gift", async (path) => {
+    const processJob = getProcessor();
+    await processJob(path === "comment" ? createMockJob() : {
+      ...createMockJob({ instagramAccountId: "ig_456", messageId: "email-start", messageText: "LINK", senderId: "commenter_999" }),
+      name: "process-message",
+    });
+    const send = path === "comment" ? mockSendPrivateReplyWithButton : mockSendDirectMessageWithButton;
+    expect(send).toHaveBeenCalledWith("decrypted_token", "ig_456", path === "comment" ? "comment_555" : "commenter_999", SAFE_FOLLOW_MESSAGES.emailPrompt, "我已完成追蹤", "followcheck:auto_789");
+    expect(mockGetUserFollowStatus).not.toHaveBeenCalled();
+    expect(mockCreateGiftClaim).not.toHaveBeenCalled();
+    expect(mockSendDirectMessageWithLinkButton).not.toHaveBeenCalled();
+    expect(JSON.stringify(send.mock.calls)).not.toContain("SECRET_GIFT");
+    expect(JSON.stringify(send.mock.calls)).not.toContain("youtube");
+  });
+
+  it.each(["followcheck:auto_789", "reveal:auto_789", "reveal:auto_789:open"])("%s creates only an email claim after a confirmed follow", async (payload) => {
+    await getProcessor()(createMockPostbackJob({ instagramAccountId: "ig_456", userId: "commenter_999", payload }));
+    expect(mockGetUserFollowStatus).toHaveBeenCalledTimes(1);
+    expect(mockCreateGiftClaim).toHaveBeenCalledWith({ automationId: "auto_789", recipientId: "commenter_999", recipientName: "commenter_user", followConfirmedAt: expect.any(Date) });
+    expect(mockSendDirectMessageWithLinkButton).toHaveBeenCalledWith("decrypted_token", "ig_456", "commenter_999", SAFE_FOLLOW_MESSAGES.emailRequest, [{ title: "填寫 Email", url: "https://example.com/gift/claim-token" }]);
+    expect(JSON.stringify(mockSendDirectMessageWithLinkButton.mock.calls)).not.toMatch(/SECRET_GIFT|youtube|private-gift/);
+    expect(mockPrisma.dmLog.upsert).not.toHaveBeenCalled();
+    expect(mockQueueAdd).not.toHaveBeenCalled();
+  });
+
+  it.each([false, null])("follow status %s cannot create an email claim or release gifts", async (status) => {
+    mockGetUserFollowStatus.mockResolvedValue(status);
+    await getProcessor()(createMockPostbackJob({ instagramAccountId: "ig_456", userId: "commenter_999", payload: "followcheck:auto_789", followRecheckAttempt: 2 }));
+    expect(mockCreateGiftClaim).not.toHaveBeenCalled();
+    expect(mockSendDirectMessageWithLinkButton).not.toHaveBeenCalled();
+    expect(mockSendDirectMessageWithButton).toHaveBeenCalledWith("decrypted_token", "ig_456", "commenter_999", status === false ? SAFE_FOLLOW_MESSAGES.retryPrompt : SAFE_FOLLOW_MESSAGES.unknown, "確認追蹤", "followcheck:auto_789");
+  });
+
+  it("keeps read fallback and old follow-up jobs from bypassing email verification", async () => {
+    const processJob = getProcessor();
+    await processJob(createMockPostbackJob({ instagramAccountId: "ig_456", userId: "commenter_999", payload: "reveal:auto_789", fallback: true }));
+    await processJob({ ...createMockJob({ instagramAccountId: "ig_456", userId: "commenter_999", automationId: "auto_789" }), name: "process-followup" });
+    expect(mockGetUserFollowStatus).not.toHaveBeenCalled();
+    expect(mockCreateGiftClaim).not.toHaveBeenCalled();
+    expect(mockSendDirectMessage).not.toHaveBeenCalled();
+    expect(mockSendDirectMessageWithLinkButton).not.toHaveBeenCalled();
+  });
+
+  it("dispatches claim jobs only through the eligibility service", async () => {
+    await getProcessor()({ ...createMockJob({ claimId: "claim_1" }), name: "process-gift-claim" });
+    expect(mockProcessGiftDelivery).toHaveBeenCalledWith("claim_1", { sendInstagramGift: expect.any(Function) });
+    expect(mockSendDirectMessageWithLinkButton).not.toHaveBeenCalled();
+  });
+
+  async function deliveryCallback() {
+    await getProcessor()({ ...createMockJob({ claimId: "claim_1" }), name: "process-gift-claim" });
+    return () => mockProcessGiftDelivery.mock.calls[0][1].sendInstagramGift({ claimId: "claim_1", automation: emailCampaign(), recipientId: "commenter_999", recipientName: "commenter_user" });
+  }
+
+  it("records only successful claim Instagram delivery and avoids sending it twice", async () => {
+    const deliver = await deliveryCallback();
+    await deliver();
+    expect(mockReserveWorkspaceDMSend).toHaveBeenCalledWith("workspace_123");
+    expect(mockReserveDMSlot).toHaveBeenCalledWith("ig_456");
+    expect(mockPrisma.dmLog.upsert).toHaveBeenCalledWith(expect.objectContaining({ create: expect.objectContaining({ commentId: "gift:claim_1", status: "SENT" }) }));
+    mockPrisma.dmLog.findUnique.mockResolvedValue({ status: "SENT" });
+    await deliver();
+    expect(mockSendDirectMessageWithLinkButton).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not claim success for rejected sends and returns their reservations", async () => {
+    const deliver = await deliveryCallback();
+    mockSendDirectMessageWithLinkButton.mockRejectedValue(new RateLimitError("rate limit"));
+    await expect(deliver()).rejects.toThrow("rate limit");
+    expect(mockPrisma.dmLog.upsert).not.toHaveBeenCalled();
+    expect(mockReleaseDMSlot).toHaveBeenCalledWith("ig_456");
+    expect(mockReleaseWorkspaceDMReservation).toHaveBeenCalledWith("workspace_123", usagePeriodStart);
+  });
+
+  it("stops uncertain sends without declaring success or refunding potentially used quota", async () => {
+    const deliver = await deliveryCallback();
+    mockSendDirectMessageWithLinkButton.mockRejectedValue(new Error("connection lost"));
+    await expect(deliver()).rejects.toThrow("delivery is unconfirmed");
+    expect(mockPrisma.dmLog.upsert).not.toHaveBeenCalled();
+    expect(mockReleaseDMSlot).not.toHaveBeenCalled();
+    expect(mockReleaseWorkspaceDMReservation).not.toHaveBeenCalled();
+  });
+
+  it("withholds claim delivery when the account rate limit has no slot", async () => {
+    const deliver = await deliveryCallback();
+    mockReserveDMSlot.mockResolvedValue({ allowed: false, reserved: false });
+    await expect(deliver()).rejects.toThrow("私訊量較多");
+    expect(mockSendDirectMessageWithLinkButton).not.toHaveBeenCalled();
+    expect(mockPrisma.dmLog.upsert).not.toHaveBeenCalled();
+    expect(mockReleaseWorkspaceDMReservation).toHaveBeenCalledWith("workspace_123", usagePeriodStart);
+  });
 });
 
 describe("DM Worker — comments left on an ad", () => {

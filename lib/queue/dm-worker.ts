@@ -13,11 +13,13 @@ import {
   MESSAGE_JOB_NAME,
   POSTBACK_JOB_NAME,
   FOLLOWUP_JOB_NAME,
+  GIFT_JOB_NAME,
   type DmQueueJob,
   type ProcessCommentJob,
   type ProcessMessageJob,
   type ProcessPostbackJob,
   type ProcessFollowUpJob,
+  type ProcessGiftClaimJob,
 } from "./client";
 import { prisma } from "@/lib/db/client";
 import {
@@ -51,13 +53,23 @@ import {
   renderMessageWithoutLink,
 } from "@/lib/tracking/message";
 import { TRACKED_LINK_ORDER } from "@/lib/tracking/link-order";
+import { createGiftClaim, processGiftDelivery, type GiftDeliveryAutomation } from "@/lib/gifts/claims";
 
 import { ZernioApiError } from "@/lib/zernio/client";
 import {
   isFollowRequiredByDeployment,
   requireConfirmedFollow,
+  requireVerifiedEmail,
   SAFE_FOLLOW_MESSAGES,
 } from "@/lib/instagram/follow-policy";
+
+function shouldUseSafeFollowMessages(automation: { requireEmail?: boolean }): boolean {
+  return isFollowRequiredByDeployment() || requireVerifiedEmail(automation);
+}
+
+function initialFollowPrompt(automation: { requireEmail?: boolean }): string {
+  return requireVerifiedEmail(automation) ? SAFE_FOLLOW_MESSAGES.emailPrompt : SAFE_FOLLOW_MESSAGES.prompt;
+}
 
 const BACKOFF_DELAYS = [5 * 60 * 1000, 15 * 60 * 1000, 45 * 60 * 1000];
 
@@ -282,7 +294,7 @@ async function sendRevealDirectMessage({
 
 
 function connectionScope(data: DmQueueJob) {
-  return data.accountConnectionId ? { instagramAccountId: data.accountConnectionId } : {};
+  return "accountConnectionId" in data && data.accountConnectionId ? { instagramAccountId: data.accountConnectionId } : {};
 }
 
 async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
@@ -469,7 +481,7 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
     ) {
       try {
         const chosen = replyPool[Math.floor(Math.random() * replyPool.length)];
-        const publicReply = isFollowRequiredByDeployment()
+        const publicReply = shouldUseSafeFollowMessages(automation)
           ? SAFE_FOLLOW_MESSAGES.publicReply
           : renderMessageWithTracking({
           message: chosen,
@@ -661,7 +673,7 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
     let delivered = false;
     try {
       if (useOpeningDm) {
-        const openingText = isFollowRequiredByDeployment()
+        const openingText = shouldUseSafeFollowMessages(automation)
           ? SAFE_FOLLOW_MESSAGES.opening
           : renderMessageWithTracking({
           message: automation.openingDmMessage as string,
@@ -673,7 +685,7 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
           instagramAccountId: automation.instagramAccount.instagramId,
           commentId: commentId,
           text: openingText,
-          buttonTitle: isFollowRequiredByDeployment()
+          buttonTitle: shouldUseSafeFollowMessages(automation)
             ? SAFE_FOLLOW_MESSAGES.button
             : automation.openingDmButtonLabel as string,
           // The ":open" marker tells a tap here apart from the follow prompt's
@@ -682,8 +694,8 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
           postId: mediaId,
         });
       } else if (sendFollowPrompt) {
-        const promptText = isFollowRequiredByDeployment()
-          ? SAFE_FOLLOW_MESSAGES.prompt
+        const promptText = shouldUseSafeFollowMessages(automation)
+          ? initialFollowPrompt(automation)
           : renderMessageWithoutLink({
           message:
             automation.followPromptMessage ||
@@ -695,7 +707,7 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
           instagramAccountId: automation.instagramAccount.instagramId,
           commentId: commentId,
           text: promptText,
-          buttonTitle: isFollowRequiredByDeployment()
+          buttonTitle: shouldUseSafeFollowMessages(automation)
             ? SAFE_FOLLOW_MESSAGES.button
             : automation.followPromptButtonLabel || "i'm following",
           payload: `followcheck:${automation.id}`,
@@ -844,14 +856,16 @@ async function sendFollowRecheckAck({
   automationId,
   userId,
   operationId,
+  safeMessage,
 }: {
   context: InstagramContext;
   instagramAccountId: string;
   automationId: string;
   userId: string;
   operationId: string;
+  safeMessage: boolean;
 }): Promise<void> {
-  const message = isFollowRequiredByDeployment()
+  const message = safeMessage
     ? SAFE_FOLLOW_MESSAGES.acknowledgement
     : process.env.FOLLOW_RECHECK_ACK_MESSAGE?.trim();
   if (!message) return;
@@ -1018,6 +1032,7 @@ async function processPostback(job: Job<ProcessPostbackJob>): Promise<void> {
               automationId: automation.id,
               userId,
               operationId,
+              safeMessage: shouldUseSafeFollowMessages(automation),
             });
           }
           return;
@@ -1044,8 +1059,8 @@ async function processPostback(job: Job<ProcessPostbackJob>): Promise<void> {
           .catch(() => {});
       }
 
-      const promptText = isFollowRequiredByDeployment()
-        ? (follows === null ? SAFE_FOLLOW_MESSAGES.unknown : SAFE_FOLLOW_MESSAGES.prompt)
+      const promptText = shouldUseSafeFollowMessages(automation)
+        ? (follows === null ? SAFE_FOLLOW_MESSAGES.unknown : SAFE_FOLLOW_MESSAGES.retryPrompt)
         : follows === null
           ? "We couldn't confirm your follow yet. Please send a message in this chat, wait a moment, and tap the button to check again. Your gift has not been sent."
           : renderMessageWithoutLink({
@@ -1063,8 +1078,8 @@ async function processPostback(job: Job<ProcessPostbackJob>): Promise<void> {
               instagramAccountId: automation.instagramAccount.instagramId,
               userId: userId,
               text: promptText,
-              buttonTitle: isFollowRequiredByDeployment()
-                ? SAFE_FOLLOW_MESSAGES.button
+              buttonTitle: shouldUseSafeFollowMessages(automation)
+                ? SAFE_FOLLOW_MESSAGES.retryButton
                 : automation.followPromptButtonLabel || "i'm following",
               payload: `followcheck:${automation.id}`,
             }),
@@ -1077,6 +1092,26 @@ async function processPostback(job: Job<ProcessPostbackJob>): Promise<void> {
       }
       return;
     }
+  }
+
+  if (requireVerifiedEmail(automation)) {
+    const claim = await createGiftClaim({
+      automationId: automation.id,
+      recipientId: userId,
+      recipientName: commenterName,
+      followConfirmedAt: new Date(),
+    });
+    await sendPostbackOnce({
+      operationId,
+      send: () => sendDirectMessageWithLinkButton({
+        context: accessToken,
+        instagramAccountId: automation.instagramAccount.instagramId,
+        userId,
+        text: SAFE_FOLLOW_MESSAGES.emailRequest,
+        buttons: [{ title: SAFE_FOLLOW_MESSAGES.emailButton, url: claim.url }],
+      }),
+    });
+    return;
   }
 
   const usage = await reserveWorkspaceDMSend(automation.workspaceId);
@@ -1231,6 +1266,7 @@ async function processFollowUp(job: Job<ProcessFollowUpJob>): Promise<void> {
 
   if (
     !automation ||
+    requireVerifiedEmail(automation) ||
     !automation.followUpEnabled ||
     !automation.followUpMessage?.trim() ||
     automation.instagramAccount.instagramId !== instagramAccountId ||
@@ -1429,8 +1465,8 @@ async function processMessage(job: Job<ProcessMessageJob>): Promise<void> {
 
     try {
       if (sendFollowPrompt) {
-        const promptText = isFollowRequiredByDeployment()
-          ? SAFE_FOLLOW_MESSAGES.prompt
+        const promptText = shouldUseSafeFollowMessages(automation)
+          ? initialFollowPrompt(automation)
           : renderMessageWithoutLink({
           message:
             automation.followPromptMessage ||
@@ -1442,7 +1478,7 @@ async function processMessage(job: Job<ProcessMessageJob>): Promise<void> {
           instagramAccountId: automation.instagramAccount.instagramId,
           userId: senderId,
           text: promptText,
-          buttonTitle: isFollowRequiredByDeployment()
+          buttonTitle: shouldUseSafeFollowMessages(automation)
             ? SAFE_FOLLOW_MESSAGES.button
             : automation.followPromptButtonLabel || "I'm following ✅",
           payload: `followcheck:${automation.id}`,
@@ -1528,7 +1564,80 @@ async function processMessage(job: Job<ProcessMessageJob>): Promise<void> {
   }
 }
 
+// Eligibility and per-channel delivery claims belong to the claim service.
+// This adapter owns only the Instagram transport, usage guards, and success log.
+async function sendClaimInstagramGift({
+  claimId,
+  automation,
+  recipientId,
+  recipientName,
+}: {
+  claimId: string;
+  automation: GiftDeliveryAutomation;
+  recipientId: string;
+  recipientName: string | null;
+}): Promise<void> {
+  const commentId = `gift:${claimId}`;
+  const existing = await prisma.dmLog.findUnique({
+    where: { automationId_commentId: { automationId: automation.id, commentId } },
+  });
+  if (existing?.status === "SENT") return;
+
+  const accessToken = await createInstagramContext(automation.instagramAccount, `${claimId}:instagram`);
+  const usage = await reserveWorkspaceDMSend(automation.workspaceId);
+  if (!usage.allowed) throw new RateLimitError("暫時無法預留禮物私訊額度，稍後重試。");
+
+  let rateLimit;
+  try {
+    rateLimit = await reserveDMSlot(automation.instagramAccount.instagramId);
+  } catch (error) {
+    await releaseWorkspaceDMReservation(automation.workspaceId, usage.periodStart);
+    throw error;
+  }
+  if (!rateLimit.allowed) {
+    await releaseWorkspaceDMReservation(automation.workspaceId, usage.periodStart);
+    throw new RateLimitError("目前私訊量較多，禮物將稍後重試。");
+  }
+
+  try {
+    await sendRevealDirectMessage({
+      accessToken,
+      automation,
+      userId: recipientId,
+      commenterName: recipientName,
+      context: "verified email gift claim",
+    });
+    await prisma.dmLog.upsert({
+      where: { automationId_commentId: { automationId: automation.id, commentId } },
+      create: {
+        workspaceId: automation.workspaceId,
+        automationId: automation.id,
+        instagramAccountId: automation.instagramAccountId,
+        commenterId: recipientId,
+        commenterName: recipientName,
+        commentText: "(confirmed email gift)",
+        commentId,
+        status: "SENT",
+        dmSentAt: new Date(),
+      },
+      update: { status: "SENT", dmSentAt: new Date(), errorMessage: null },
+    });
+  } catch (originalError) {
+    const error = classifySendError(originalError);
+    if (isConfirmedSendRejection(error)) {
+      if (rateLimit.reserved) await releaseDMSlot(automation.instagramAccount.instagramId);
+      await releaseWorkspaceDMReservation(automation.workspaceId, usage.periodStart);
+    }
+    throw error;
+  }
+}
+
 async function dispatchJob(job: Job<DmQueueJob>): Promise<void> {
+  if (job.name === GIFT_JOB_NAME) {
+    return processGiftDelivery((job as Job<ProcessGiftClaimJob>).data.claimId, {
+      sendInstagramGift: sendClaimInstagramGift,
+    });
+  }
   if (job.name === POSTBACK_JOB_NAME) {
     return processPostback(job as Job<ProcessPostbackJob>);
   }
@@ -1559,7 +1668,7 @@ async function recordWorkerFailure(
   error: Error
 ) {
   try {
-    const instagramAccountId = job?.data.instagramAccountId;
+    const instagramAccountId = job && "instagramAccountId" in job.data ? job.data.instagramAccountId : undefined;
     const commentId =
       job && "commentId" in job.data ? job.data.commentId : null;
     const account = instagramAccountId

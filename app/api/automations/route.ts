@@ -38,6 +38,7 @@ const createAutomationSchema = z
     openingDmButtonLabel: z.string().max(64).optional().nullable(),
     linkButtonLabel: z.string().max(20).optional().nullable(),
     requireFollow: z.boolean().optional().default(false),
+    requireEmail: z.boolean().optional().default(false),
     followPromptMessage: z.string().max(1000).optional().nullable(),
     followPromptButtonLabel: z.string().max(20).optional().nullable(),
     followUpEnabled: z.boolean().optional().default(false),
@@ -101,6 +102,7 @@ const updateAutomationSchema = z.object({
   openingDmButtonLabel: z.string().max(64).optional().nullable(),
   linkButtonLabel: z.string().max(20).optional().nullable(),
   requireFollow: z.boolean().optional(),
+  requireEmail: z.boolean().optional(),
   followPromptMessage: z.string().max(1000).optional().nullable(),
   followPromptButtonLabel: z.string().max(20).optional().nullable(),
   followUpEnabled: z.boolean().optional(),
@@ -390,6 +392,7 @@ export async function POST(request: NextRequest) {
         : null,
       linkButtonLabel: parsed.data.linkButtonLabel || null,
       requireFollow: parsed.data.requireFollow,
+      requireEmail: parsed.data.requireEmail,
       followPromptMessage: parsed.data.requireFollow
         ? parsed.data.followPromptMessage || null
         : null,

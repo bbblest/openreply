@@ -37,6 +37,7 @@ interface CampaignPreviewProps {
   hasSecondLink: boolean;
   secondLinkButtonLabel: string;
   requireFollow: boolean;
+  requireEmail?: boolean;
   followPromptMessage: string;
   followPromptButtonLabel: string;
   followUpEnabled: boolean;
@@ -320,6 +321,7 @@ function DmScreen({
   hasSecondLink,
   secondLinkButtonLabel,
   requireFollow,
+  requireEmail = false,
   followPromptMessage,
   followPromptButtonLabel,
   followUpEnabled,
@@ -340,6 +342,7 @@ function DmScreen({
   hasSecondLink: boolean;
   secondLinkButtonLabel: string;
   requireFollow: boolean;
+  requireEmail?: boolean;
   followPromptMessage: string;
   followPromptButtonLabel: string;
   followUpEnabled: boolean;
@@ -362,7 +365,7 @@ function DmScreen({
         </span>
       </div>
 
-      <div className="flex-1 space-y-3 px-3 py-4">
+      <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-3 py-4">
         {inboundMessage !== undefined && (
           <div className="flex justify-end">
             <div className="max-w-[80%] rounded-2xl rounded-br-md bg-accent px-3 py-2 text-sm">
@@ -405,6 +408,21 @@ function DmScreen({
             <p className="py-1 text-center text-[11px] text-zinc-400">
               {t("After they tap the button and Instagram confirms the follow")}
             </p>
+          </>
+        )}
+        {requireEmail && (
+          <>
+            <div className="flex items-end gap-2">
+              <Avatar url={avatarUrl} size={24} />
+              <div className="max-w-[80%] overflow-hidden rounded-2xl rounded-bl-md bg-zinc-800">
+                <p className="whitespace-pre-wrap px-3 py-2 text-sm">已確認追蹤！請填寫 Email，並到信箱確認。完成後，禮物會透過 Instagram 私訊與 Email 傳送。</p>
+                <div className="mx-1.5 mb-1.5 rounded-xl bg-zinc-700 px-4 py-1.5 text-center text-sm font-medium">填寫 Email</div>
+              </div>
+            </div>
+            <div className="rounded-lg border border-zinc-700 px-3 py-2 text-center text-[11px] leading-relaxed text-zinc-300">
+              填寫 Email → 收到驗證信 → 按信中連結並確認
+            </div>
+            <p className="py-1 text-center text-[11px] text-zinc-400">Email 確認完成後，才傳送下方禮物，並寄送一份至 Email。</p>
           </>
         )}
         {(() => {
@@ -525,7 +543,8 @@ export default function CampaignPreview(props: CampaignPreviewProps) {
             linkButtonLabel={props.linkButtonLabel}
             hasSecondLink={props.hasSecondLink}
             secondLinkButtonLabel={props.secondLinkButtonLabel}
-            requireFollow={props.requireFollow}
+            requireFollow={props.requireFollow || props.requireEmail === true}
+            requireEmail={props.requireEmail}
             followPromptMessage={props.followPromptMessage}
             followPromptButtonLabel={props.followPromptButtonLabel}
             followUpEnabled={props.followUpEnabled}
@@ -547,7 +566,8 @@ export default function CampaignPreview(props: CampaignPreviewProps) {
             linkButtonLabel={props.linkButtonLabel}
             hasSecondLink={props.hasSecondLink}
             secondLinkButtonLabel={props.secondLinkButtonLabel}
-            requireFollow={props.requireFollow}
+            requireFollow={props.requireFollow || props.requireEmail === true}
+            requireEmail={props.requireEmail}
             followPromptMessage={props.followPromptMessage}
             followPromptButtonLabel={props.followPromptButtonLabel}
             followUpEnabled={props.followUpEnabled}
@@ -559,9 +579,9 @@ export default function CampaignPreview(props: CampaignPreviewProps) {
         )}
       </Phone>
 
-      {props.requireFollow && (activeTab === "dm" || activeTab === "dmTrigger") && (
+      {(props.requireFollow || props.requireEmail) && (activeTab === "dm" || activeTab === "dmTrigger") && (
         <p className="max-w-sm text-center text-xs text-muted">
-          {t("Success preview: the gift appears only after follow confirmation. If the follow cannot be confirmed, only the prompt is sent.")}
+          {props.requireEmail ? "成功流程預覽：確認追蹤、填寫 Email 並到信箱完成確認後，才會透過 Instagram 私訊與 Email 傳送禮物；前面步驟不提供禮物連結。" : t("Success preview: the gift appears only after follow confirmation. If the follow cannot be confirmed, only the prompt is sent.")}
         </p>
       )}
 

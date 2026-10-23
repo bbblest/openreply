@@ -77,15 +77,22 @@ export interface ProcessMessageJob {
   senderId: string;
 }
 
+// Claim eligibility and channel idempotency are rechecked in the claim service.
+export interface ProcessGiftClaimJob {
+  claimId: string;
+}
+
 export type DmQueueJob =
   | ProcessCommentJob
   | ProcessPostbackJob
   | ProcessFollowUpJob
-  | ProcessMessageJob;
+  | ProcessMessageJob
+  | ProcessGiftClaimJob;
 
 export const POSTBACK_JOB_NAME = "process-postback";
 export const FOLLOWUP_JOB_NAME = "process-followup";
 export const MESSAGE_JOB_NAME = "process-message";
+export const GIFT_JOB_NAME = "process-gift-claim";
 
 let dmQueue: Queue<DmQueueJob> | null = null;
 

@@ -19,6 +19,7 @@ import AccountSelect, { type AccountOption } from "@/components/account-select";
 import PostPicker from "@/components/post-picker";
 import CampaignPreview, { type PreviewTab } from "@/components/campaign-preview";
 import { readCache, writeCache } from "@/lib/client-cache";
+import { SAFE_FOLLOW_MESSAGES } from "@/lib/instagram/follow-policy";
 import {
   IMPORT_QUEUE_KEY,
   IMPORT_ACCOUNT_KEY,
@@ -44,6 +45,7 @@ interface LoadedCampaign {
   openingDmButtonLabel: string | null;
   linkButtonLabel: string | null;
   requireFollow: boolean;
+  requireEmail?: boolean;
   followPromptMessage: string | null;
   followPromptButtonLabel: string | null;
   followUpEnabled: boolean;
@@ -60,6 +62,7 @@ interface LoadedCampaign {
 interface CampaignBuilderProps {
   mode: "new" | "edit";
   campaignId?: string;
+  emailPolicy?: { required: boolean };
   followPolicy: {
     required: boolean;
     messages: {
@@ -144,7 +147,7 @@ function Toggle({
   );
 }
 
-export default function CampaignBuilder({ mode, campaignId, followPolicy }: CampaignBuilderProps) {
+export default function CampaignBuilder({ mode, campaignId, followPolicy, emailPolicy }: CampaignBuilderProps) {
   const { t } = useI18n();
   const router = useRouter();
   // Loading a campaign uses the initial language for missing labels. Changing
@@ -196,6 +199,7 @@ export default function CampaignBuilder({ mode, campaignId, followPolicy }: Camp
   const [secondaryDestinationUrl, setSecondaryDestinationUrl] = useState("");
   const [secondaryButtonLabel, setSecondaryButtonLabel] = useState(t("Open link"));
   const [customRequireFollow, setRequireFollow] = useState(false);
+  const [customRequireEmail, setRequireEmail] = useState(false);
   const [customFollowPromptMessage, setFollowPromptMessage] = useState("");
   const [customFollowPromptButtonLabel, setFollowPromptButtonLabel] =
     useState(t("Confirm follow"));
@@ -205,23 +209,25 @@ export default function CampaignBuilder({ mode, campaignId, followPolicy }: Camp
 
   // Server policy applies equally to form values, validation, payload, and preview.
   // Loading an old campaign or CSV row must not restore pre-verification gifts.
-  const requireFollow = followPolicy.required || customRequireFollow;
+  const requireEmail = emailPolicy?.required === true || customRequireEmail;
+  const requireFollow = followPolicy.required || customRequireFollow || requireEmail;
+  const fixedBeforeGift = followPolicy.required || requireEmail;
   // A gated campaign has one first message for both entry points. The follow
   // prompt replaces the optional opening DM, rather than adding another tap.
   const openingDmEnabled = !requireFollow && customOpeningDmEnabled;
-  const publicReplyMessages = followPolicy.required
+  const publicReplyMessages = fixedBeforeGift
     ? [followPolicy.messages.publicReply]
     : customPublicReplyMessages;
-  const openingDmMessage = followPolicy.required
+  const openingDmMessage = fixedBeforeGift
     ? followPolicy.messages.opening
     : customOpeningDmMessage;
-  const openingDmButtonLabel = followPolicy.required
+  const openingDmButtonLabel = fixedBeforeGift
     ? followPolicy.messages.button
     : customOpeningDmButtonLabel;
-  const followPromptMessage = followPolicy.required
-    ? followPolicy.messages.prompt
-    : customFollowPromptMessage;
-  const followPromptButtonLabel = followPolicy.required
+  const followPromptMessage = requireEmail
+    ? SAFE_FOLLOW_MESSAGES.emailPrompt
+    : followPolicy.required ? followPolicy.messages.prompt : customFollowPromptMessage;
+  const followPromptButtonLabel = fixedBeforeGift
     ? followPolicy.messages.button
     : customFollowPromptButtonLabel;
 
@@ -325,6 +331,7 @@ export default function CampaignBuilder({ mode, campaignId, followPolicy }: Camp
         setSecondaryButtonLabel(secondLink?.label ?? loadFallbackLabels.current.openLink);
         setSecondLinkOpen(Boolean(secondLink?.destinationUrl));
         setRequireFollow(c.requireFollow ?? false);
+        setRequireEmail(c.requireEmail ?? false);
         setFollowPromptMessage(c.followPromptMessage ?? "");
         setFollowPromptButtonLabel(
           c.followPromptButtonLabel ?? loadFallbackLabels.current.confirmFollow
@@ -464,6 +471,7 @@ export default function CampaignBuilder({ mode, campaignId, followPolicy }: Camp
       secondaryDestinationUrl: secondaryDestinationUrl.trim() || "",
       secondaryButtonLabel: secondaryButtonLabel.trim() || t("Open link"),
       requireFollow,
+      requireEmail,
       followPromptMessage: requireFollow ? followPromptMessage.trim() : "",
       followPromptButtonLabel: requireFollow
         ? followPromptButtonLabel.trim() || t("Confirm follow")
@@ -797,7 +805,7 @@ export default function CampaignBuilder({ mode, campaignId, followPolicy }: Camp
                 <div key={i} className="flex items-center gap-2">
                   <input
                     value={msg}
-                    readOnly={followPolicy.required}
+                    readOnly={fixedBeforeGift}
                     onChange={(e) =>
                       setPublicReplyMessages((prev) =>
                         prev.map((m, idx) => (idx === i ? e.target.value : m))
@@ -807,7 +815,7 @@ export default function CampaignBuilder({ mode, campaignId, followPolicy }: Camp
                     maxLength={1000}
                     className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-foreground placeholder:text-zinc-500 focus:border-accent/40 focus:outline-none"
                   />
-                  {!followPolicy.required && publicReplyMessages.length > 1 && (
+                  {!fixedBeforeGift && publicReplyMessages.length > 1 && (
                     <button
                       type="button"
                       onClick={() =>
@@ -823,7 +831,7 @@ export default function CampaignBuilder({ mode, campaignId, followPolicy }: Camp
                   )}
                 </div>
               ))}
-              {!followPolicy.required && publicReplyMessages.length < 10 && (
+              {!fixedBeforeGift && publicReplyMessages.length < 10 && (
                 <button
                   type="button"
                   onClick={() =>
@@ -834,7 +842,7 @@ export default function CampaignBuilder({ mode, campaignId, followPolicy }: Camp
                   {t("+ Add another reply")}
                 </button>
               )}
-              {!followPolicy.required && (
+              {!fixedBeforeGift && (
                 <p className="text-xs text-muted">
                   {t("One is picked at random each time, so replies don't look identical.")}
                 </p>
@@ -857,7 +865,7 @@ export default function CampaignBuilder({ mode, campaignId, followPolicy }: Camp
               <div className="mt-3 space-y-2">
                 <textarea
                   value={openingDmMessage}
-                  readOnly={followPolicy.required}
+                  readOnly={fixedBeforeGift}
                   onChange={(e) => setOpeningDmMessage(e.target.value)}
                   placeholder={t("Hey there! I'm so happy you're here 😊")}
                   rows={3}
@@ -866,7 +874,7 @@ export default function CampaignBuilder({ mode, campaignId, followPolicy }: Camp
                 />
                 <input
                   value={openingDmButtonLabel}
-                  readOnly={followPolicy.required}
+                  readOnly={fixedBeforeGift}
                   onChange={(e) => setOpeningDmButtonLabel(e.target.value)}
                   placeholder={t("Send me the link")}
                   className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-foreground placeholder:text-zinc-500 focus:border-accent/40 focus:outline-none"
@@ -884,14 +892,14 @@ export default function CampaignBuilder({ mode, campaignId, followPolicy }: Camp
               <Toggle
                 on={requireFollow}
                 onToggle={() => setRequireFollow(!requireFollow)}
-                disabled={followPolicy.required}
+                disabled={followPolicy.required || requireEmail}
               />
             </div>
             {requireFollow && (
               <div className="mt-3 space-y-2">
                 <textarea
                   value={followPromptMessage}
-                  readOnly={followPolicy.required}
+                  readOnly={fixedBeforeGift}
                   onChange={(e) => setFollowPromptMessage(e.target.value)}
                   placeholder={t("Follow this account, then tap the button to confirm. We will send the gift after checking your follow.")}
                   rows={3}
@@ -900,14 +908,14 @@ export default function CampaignBuilder({ mode, campaignId, followPolicy }: Camp
                 />
                 <input
                   value={followPromptButtonLabel}
-                  readOnly={followPolicy.required}
+                  readOnly={fixedBeforeGift}
                   onChange={(e) => setFollowPromptButtonLabel(e.target.value)}
                   placeholder={t("Confirm follow")}
                   className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-foreground placeholder:text-zinc-500 focus:border-accent/40 focus:outline-none"
                   maxLength={20}
                 />
                 <p className="text-xs text-muted">
-                  {t("Comments and keyword DMs receive this prompt first. After they tap the button, Instagram must confirm the follow before the gift is sent.")}
+                  {requireEmail ? "留言與關鍵字私訊都先收到追蹤提示。按鈕確認追蹤後，還須填寫 Email 並到信箱確認，才會送出禮物。" : t("Comments and keyword DMs receive this prompt first. After they tap the button, Instagram must confirm the follow before the gift is sent.")}
                 </p>
                 <p className="text-xs text-muted">
                   {t("If they are not following or verification is unavailable, keep showing the prompt and withhold the gift.")}
@@ -922,9 +930,21 @@ export default function CampaignBuilder({ mode, campaignId, followPolicy }: Camp
           </div>
         </Section>
 
-        <Section title={requireFollow ? t("After follow confirmation, send the gift") : t("And then, they will get")}>
+        <Section title="Email 確認與雙邊送禮">
+          <div className="space-y-3 rounded-lg border border-border p-3">
+            <div className="flex items-center justify-between gap-3">
+              <span className="text-sm text-foreground">領禮前須填寫並確認 Email</span>
+              <Toggle on={requireEmail} onToggle={() => setRequireEmail(!requireEmail)} disabled={emailPolicy?.required === true} />
+            </div>
+            {requireEmail && <p className="text-xs leading-relaxed text-muted">確認追蹤 → 填寫 Email → 到信箱確認 → 透過 Instagram 私訊與 Email 傳送禮物。確認完成前不提供禮物內容或連結。</p>}
+            {requireEmail && <p className="text-xs leading-relaxed text-muted">後續內容與活動通知由領取者另外選擇，不預先勾選；未同意也能領取本次禮物。</p>}
+            {emailPolicy?.required && <p className="text-xs text-muted">所有活動皆須確認 Email，此要求已固定啟用。</p>}
+          </div>
+        </Section>
+
+        <Section title={requireEmail ? "確認追蹤與 Email 後，才傳送禮物" : requireFollow ? t("After follow confirmation, send the gift") : t("And then, they will get")}>
           <div className="rounded-lg border border-border p-3 space-y-2">
-            <span className="text-sm text-foreground">{t("a DM with a link")}</span>
+            <span className="text-sm text-foreground">{requireEmail ? "Instagram 私訊與 Email 的禮物內容" : t("a DM with a link")}</span>
             <textarea
               value={dmMessage}
               onChange={(e) => setDmMessage(e.target.value)}
@@ -1065,6 +1085,7 @@ export default function CampaignBuilder({ mode, campaignId, followPolicy }: Camp
             }
             secondLinkButtonLabel={secondaryButtonLabel || t("Open link")}
             requireFollow={requireFollow}
+            requireEmail={requireEmail}
             followPromptMessage={followPromptMessage}
             followPromptButtonLabel={followPromptButtonLabel || t("Confirm follow")}
             followUpEnabled={followUpEnabled}
