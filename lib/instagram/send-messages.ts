@@ -51,6 +51,7 @@ async function sendZernioMessage({
     path,
     method: "POST",
     body,
+    signal: AbortSignal.timeout(8_000),
     ...(commentId ? {} : { idempotencyKey }),
   }).catch((error: unknown) => {
     // A send may have succeeded upstream before a network/5xx failure. The

@@ -55,6 +55,9 @@ import {
 import { TRACKED_LINK_ORDER } from "@/lib/tracking/link-order";
 import { createGiftClaim, processGiftDelivery, type GiftDeliveryAutomation } from "@/lib/gifts/claims";
 
+import { boundedFollowRead, checkFollowWithRetry } from "@/lib/instagram/follow-check";
+import { followGateKey, pendingFollowGateRecoveryDelay, transitionFollowGate, FOLLOW_CHECK_LEASE_MS } from "./follow-gate-state";
+
 import { ZernioApiError } from "@/lib/zernio/client";
 import {
   isFollowRequiredByDeployment,
@@ -72,30 +75,6 @@ function initialFollowPrompt(automation: { requireEmail?: boolean }): string {
 }
 
 const BACKOFF_DELAYS = [5 * 60 * 1000, 15 * 60 * 1000, 45 * 60 * 1000];
-
-// How long to wait before re-checking an unconfirmed follow: one
-// delay per re-check, each counted from the previous check.
-//
-// `is_user_follow_business` does not reflect a brand-new follow right away, and
-// the follow gate asks people to follow and tap a button that is sitting in
-// front of them — so tapping seconds after following is the normal case, not
-// the exception. Rejecting on the first `false` therefore turns away the exact
-// people who did what was asked, and they get told to follow an account they
-// already follow.
-//
-// Two checks rather than one long wait: measured, a follow still read `false`
-// 17 s after it happened and `true` by ~68 s. An early check catches the fast
-// ones sooner; the last still covers the slow ones.
-const FOLLOW_RECHECK_DELAYS_MS = (
-  process.env.FOLLOW_RECHECK_DELAYS_MS ?? "20000,40000"
-)
-  .split(",")
-  .map(Number)
-  .filter((ms) => ms > 0);
-const FOLLOW_RECHECK_TOTAL_MS = FOLLOW_RECHECK_DELAYS_MS.reduce(
-  (total, ms) => total + ms,
-  0
-);
 
 /**
  * Sends Meta answered with an error but may well have delivered anyway.
@@ -131,13 +110,7 @@ function formatError(error: unknown): string {
 async function readFollowStatus(
   args: Parameters<typeof getUserFollowStatus>[0]
 ): Promise<boolean | null> {
-  try {
-    const status = await getUserFollowStatus(args);
-    return typeof status === "boolean" ? status : null;
-  } catch {
-    console.warn("[DM Worker] Follow status unavailable; gift withheld");
-    return null;
-  }
+  return boundedFollowRead(signal => getUserFollowStatus({ ...args, signal }));
 }
 
 // Meta rejections that a plain-text retry cannot fix: the send was refused for
@@ -816,10 +789,13 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
 async function sendPostbackOnce({
   operationId,
   send,
+  isCurrent,
 }: {
   operationId: string;
   send: () => Promise<unknown>;
+  isCurrent?: () => Promise<boolean>;
 }): Promise<boolean> {
+  if (isCurrent && !await isCurrent()) return false;
   try {
     await prisma.postbackDelivery.create({ data: { id: operationId } });
   } catch (error) {
@@ -833,6 +809,12 @@ async function sendPostbackOnce({
     throw error;
   }
   try {
+    // The database may respond after a newer check took ownership. No external
+    // send has happened yet, so releasing only THIS new claim is safe.
+    if (isCurrent && !await isCurrent()) {
+      await prisma.postbackDelivery.delete({ where: { id: operationId } });
+      return false;
+    }
     await send();
     return true;
   } catch (error) {
@@ -846,53 +828,29 @@ async function sendPostbackOnce({
   }
 }
 
-// Tells someone whose "I'm following" tap is being re-checked that it is being
-// looked at, so the chat does not sit silent while Instagram catches up with
-// the follow. Opt-in through FOLLOW_RECHECK_ACK_MESSAGE, and best-effort: it
-// never holds up the re-check, which is already queued when this runs.
-async function sendFollowRecheckAck({
-  context,
-  instagramAccountId,
-  automationId,
-  userId,
-  operationId,
-  safeMessage,
-}: {
-  context: InstagramContext;
-  instagramAccountId: string;
-  automationId: string;
-  userId: string;
-  operationId: string;
-  safeMessage: boolean;
-}): Promise<void> {
-  const message = safeMessage
-    ? SAFE_FOLLOW_MESSAGES.acknowledgement
-    : process.env.FOLLOW_RECHECK_ACK_MESSAGE?.trim();
-  if (!message) return;
+// Bound sends too: an acknowledgement must not prevent the result forever.
+// The actual provider requests also abort; uncertain sends retain durable dedupe.
+async function boundedFollowSend(send: (signal: AbortSignal) => Promise<unknown>): Promise<void> {
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    // One acknowledgement per re-check cycle: a burst of taps collapses into a
-    // single re-check (bucketed job id) and should get a single reply too.
-    const first = await getRedisConnection().set(
-      `follow_recheck_ack:${automationId}:${userId}`,
-      "1",
-      "PX",
-      FOLLOW_RECHECK_TOTAL_MS,
-      "NX"
-    );
-    if (first !== "OK") return;
-    await sendPostbackOnce({
-      // Its own id: the tap's id is claimed later by the link or prompt that
-      // the re-check sends, and claiming it here would suppress that message.
-      operationId: `${operationId}:ack`,
-      send: () =>
-        sendDirectMessage({ context, instagramAccountId, userId, message }),
-    });
-  } catch (error) {
-    console.log(
-      "[DM Worker] Failed to send follow re-check acknowledgement:",
-      formatError(error),
-    );
+    await Promise.race([
+      Promise.resolve().then(() => send(controller.signal)),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => {
+          controller.abort();
+          reject(new Error("Follow response delivery unconfirmed (timeout)"));
+        }, 8_000);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
   }
+}
+
+function logFollowCheck(operationId: string, outcome: string) {
+  // No tokens, addresses or message bodies in logs.
+  console.info("[Follow gate]", JSON.stringify({ operationId, outcome }));
 }
 
 /**
@@ -907,10 +865,9 @@ async function processPostback(job: Job<ProcessPostbackJob>): Promise<void> {
   if (!isFollowCheck && !payload.startsWith("reveal:")) return;
   // The opening DM's button appends ":open" to the payload; the follow
   // prompt's button does not. Automation ids are cuids and contain no colon.
-  const [automationId, marker] = payload
+  const [automationId] = payload
     .slice(isFollowCheck ? "followcheck:".length : "reveal:".length)
     .split(":");
-  const fromOpeningDm = marker === "open";
 
   const automation = await prisma.automation.findFirst({
     where: { id: automationId, isActive: true, ...connectionScope(job.data) },
@@ -974,7 +931,7 @@ async function processPostback(job: Job<ProcessPostbackJob>): Promise<void> {
     return;
   }
 
-  const operationId = createHash("sha256")
+  const operationId = job.data.followTimeoutCheckId ?? createHash("sha256")
     .update(JSON.stringify([
       automation.instagramAccountId,
       automation.id,
@@ -983,271 +940,318 @@ async function processPostback(job: Job<ProcessPostbackJob>): Promise<void> {
     ]))
     .digest("hex");
 
-  // Verify every real confirmation tap, including legacy reveal: buttons.
-  // A button tap is a request to verify, never proof that the user follows.
-  if (requireConfirmedFollow(automation)) {
-    const follows = await readFollowStatus({
-      context: accessToken,
-      recipientId: userId,
-    });
-    if (follows !== true) {
-
-      // A tap on a legacy opening-DM button is not a claim to follow — most people
-      // who tap it simply don't follow yet — so they get the follow prompt
-      // right away. Only the prompt's own button earns the delayed re-check;
-      // holding an opening tap for it left people staring at a silent chat.
-      if (!fromOpeningDm) {
-        // Give a new follow or temporarily unavailable status time to resolve.
-        //
-        // The job id is bucketed by the recheck window, not fixed per user.
-        // BullMQ keeps completed jobs (removeOnComplete: count 1000) and silently
-        // drops an add whose id is still retained, so a fixed id let a person be
-        // re-checked once and then never again — their next false tap did
-        // nothing at all, no link and no prompt. Bucketing still collapses a burst
-        // of taps into a single re-check, which is what the fixed id was for.
-        //
-        // Jobs queued before re-checks were counted carry only `followRecheck`,
-        // which meant one re-check done.
-        const rechecksDone =
-          job.data.followRecheckAttempt ?? (job.data.followRecheck ? 1 : 0);
-        if (rechecksDone < FOLLOW_RECHECK_DELAYS_MS.length) {
-          const delay = FOLLOW_RECHECK_DELAYS_MS[rechecksDone];
-          const window = Math.floor(Date.now() / delay);
-          await getDMQueue().add(
-            POSTBACK_JOB_NAME,
-            {
-              ...job.data,
-              followRecheck: true,
-              followRecheckAttempt: rechecksDone + 1,
-            },
-            {
-              delay,
-              jobId: `postback_recheck_${automation.id}_${userId}_${rechecksDone + 1}_${window}`,
-            }
-          );
-          if (rechecksDone === 0) {
-            await sendFollowRecheckAck({
-              context: accessToken,
-              instagramAccountId: automation.instagramAccount.instagramId,
-              automationId: automation.id,
-              userId,
-              operationId,
-              safeMessage: shouldUseSafeFollowMessages(automation),
-            });
+  let gateKey: string | undefined;
+  let responseSent = false;
+  const scheduleFollowRecovery = (delay: number) => getDMQueue().add(POSTBACK_JOB_NAME, {
+    ...job.data, followTimeoutCheckId: operationId,
+  }, {
+    delay, jobId: `follow_timeout_${operationId}`,
+    removeOnComplete: true, removeOnFail: { age: 86400, count: 2000 },
+    attempts: 3, backoff: { type: "fixed", delay: 1_000 },
+  });
+  const canSendResult = async () => {
+    if (!gateKey || await transitionFollowGate(gateKey, "current", operationId) === "current") return true;
+    logFollowCheck(operationId, "stale_result_ignored");
+    return false;
+  };
+  try {
+    // Phase 1-B fixes scheduling, not eligibility: every NEW check still needs a
+    // fresh explicit true. An unknown result never creates a claim or sends gifts.
+    if (requireConfirmedFollow(automation)) {
+      gateKey = followGateKey(automation.instagramAccountId, automation.id, userId);
+      let follows: boolean | null = null;
+      let attempts = 0;
+      let outcome: string;
+      if (job.data.followTimeoutCheckId) {
+        outcome = await transitionFollowGate(gateKey, "expire", operationId);
+        if (outcome !== "unknown") {
+          logFollowCheck(operationId, outcome);
+          if (outcome === "delivery_unconfirmed") {
+            await recordWorkerAlert({ level: "error", message: "追蹤檢查結果未確認送達，請核對訊息紀錄。", jobId: job.id });
           }
+          gateKey = undefined;
           return;
         }
-
-        // Record why verification did not pass without treating unknown as
-        // proof of non-following. No gift is released in either case.
-        await prisma.operationalEvent
-          .create({
-            data: {
-              workspaceId: automation.workspaceId,
-              source: "WORKER",
-              level: "INFO",
-              message: "Follow gate rejected a button tap",
-              payload: {
-                automationId: automation.id,
-                automationName: automation.name,
-                userId,
-                commenterName,
-                followStatus: follows === false ? "not_following" : "unknown",
+        logFollowCheck(operationId, "expired_check_recovered");
+      } else {
+        // A completed event remains deduped after queue retention or Redis expiry.
+        if (await prisma.postbackDelivery.findUnique({ where: { id: operationId } })) {
+          logFollowCheck(operationId, "duplicate_event");
+          gateKey = undefined;
+          return;
+        }
+        const begin = await transitionFollowGate(gateKey, "begin", operationId,
+          job.data.eventAt ?? job.timestamp ?? Date.now());
+        if (begin !== "started") {
+          const existingKey = gateKey;
+          // This execution does not own the live check. Even a failed repair
+          // must not release another execution's lease in the finally block.
+          gateKey = undefined;
+          if (begin === "duplicate_event") {
+            const delay = await pendingFollowGateRecoveryDelay(existingKey, operationId);
+            if (delay !== null) {
+              // BullMQ redelivers an active job after process death. Repair the
+              // small CAS -> queue.add gap instead of completing it silently.
+              // A pre-existing watchdog keeps the same deterministic job id.
+              await scheduleFollowRecovery(delay);
+              logFollowCheck(operationId, "pending_watchdog_repaired");
+            }
+          }
+          logFollowCheck(operationId, begin);
+          return;
+        }
+        try {
+          // Persist recovery before any "checking" message or external API call.
+          // Legal job id, independent of wall-clock buckets and retained old jobs.
+          await scheduleFollowRecovery(FOLLOW_CHECK_LEASE_MS);
+        } catch (error) {
+          await transitionFollowGate(gateKey, "cancel", operationId);
+          gateKey = undefined;
+          throw error;
+        }
+        const ownedKey = gateKey;
+        let checkingDone = false;
+        let acknowledgement: Promise<void> | undefined;
+        const ackTimer = setTimeout(() => {
+          acknowledgement = boundedFollowSend(async signal => {
+            if (checkingDone || await transitionFollowGate(ownedKey, "current", operationId) !== "current") return;
+            if (checkingDone) return;
+            await sendPostbackOnce({
+              operationId: `${operationId}:ack`,
+              isCurrent: async () => !signal.aborted && !checkingDone &&
+                await transitionFollowGate(ownedKey, "current", operationId) === "current",
+              send: async () => {
+                // Re-check after the durable send claim; a delayed DB response
+                // must not send "checking" after lookup completion or timeout.
+                if (signal.aborted || checkingDone) return;
+                await sendDirectMessage({
+                  context: accessToken, instagramAccountId, userId,
+                  message: SAFE_FOLLOW_MESSAGES.acknowledgement,
+                });
               },
-            },
-          })
-          .catch(() => {});
+            });
+          }).catch(() => { logFollowCheck(operationId, "acknowledgement_unconfirmed"); });
+        }, 3_000);
+        try {
+          const result = await checkFollowWithRetry(signal => getUserFollowStatus({
+            context: accessToken, recipientId: userId, signal,
+          }));
+          follows = result.follows;
+          attempts = result.attempts;
+        } finally {
+          checkingDone = true;
+          clearTimeout(ackTimer);
+          // Order our attempts. A remote server may still deliver an aborted
+          // request late, so uncertain sends are logged and never auto-replayed.
+          await acknowledgement;
+        }
+        outcome = await transitionFollowGate(gateKey, "complete", operationId, String(follows));
       }
-
-      const promptText = shouldUseSafeFollowMessages(automation)
-        ? (follows === null ? SAFE_FOLLOW_MESSAGES.unknown : SAFE_FOLLOW_MESSAGES.retryPrompt)
-        : follows === null
-          ? "We couldn't confirm your follow yet. Please send a message in this chat, wait a moment, and tap the button to check again. Your gift has not been sent."
-          : renderMessageWithoutLink({
-        message:
-          automation.followPromptMessage ||
-          "quick favor before i send your link. i don't make any money from this, it's free. if you want to support me, just don't unfollow after, and star the repo on github if it helps you. tap the button once you're following and i'll send it over",
-        commenterName,
-      });
-      try {
+      if (outcome === "stale" || await transitionFollowGate(gateKey, "current", operationId) !== "current") {
+        logFollowCheck(operationId, "stale_result_ignored");
+        gateKey = undefined;
+        return;
+      }
+      logFollowCheck(operationId, outcome);
+      if (outcome !== "following") {
+        const text = outcome === "cooldown" ? SAFE_FOLLOW_MESSAGES.cooldown
+          : outcome === "unknown" ? SAFE_FOLLOW_MESSAGES.unknown
+          : shouldUseSafeFollowMessages(automation) ? SAFE_FOLLOW_MESSAGES.retryPrompt
+          : renderMessageWithoutLink({ message: automation.followPromptMessage || SAFE_FOLLOW_MESSAGES.retryPrompt, commenterName });
         await sendPostbackOnce({
           operationId,
-          send: () =>
-            sendDirectMessageWithButton({
-              context: accessToken,
-              instagramAccountId: automation.instagramAccount.instagramId,
-              userId: userId,
-              text: promptText,
-              buttonTitle: shouldUseSafeFollowMessages(automation)
-                ? SAFE_FOLLOW_MESSAGES.retryButton
-                : automation.followPromptButtonLabel || "i'm following",
+          isCurrent: canSendResult,
+          send: () => boundedFollowSend(() => outcome === "cooldown"
+            ? sendDirectMessage({ context: accessToken, instagramAccountId, userId, message: text })
+            : sendDirectMessageWithButton({
+              context: accessToken, instagramAccountId, userId, text,
+              buttonTitle: shouldUseSafeFollowMessages(automation) ? SAFE_FOLLOW_MESSAGES.button
+                : automation.followPromptButtonLabel || SAFE_FOLLOW_MESSAGES.button,
               payload: `followcheck:${automation.id}`,
-            }),
+            })),
         });
-      } catch (error) {
-        console.log(
-          "[DM Worker] Failed to re-send follow prompt:",
-          formatError(error),
-        );
+        await prisma.operationalEvent.create({ data: {
+          workspaceId: automation.workspaceId, source: "WORKER", level: "INFO",
+          message: "Follow gate rejected a button tap",
+          payload: { automationId: automation.id, userId, operationId, attempt: attempts,
+            followStatus: outcome === "cooldown" ? "not_following" : outcome, cooldown: outcome === "cooldown" },
+        } }).catch(() => {});
+        return;
       }
+      await prisma.operationalEvent.create({ data: {
+        workspaceId: automation.workspaceId, source: "WORKER", level: "INFO",
+        message: "Follow gate confirmed a button tap",
+        payload: { automationId: automation.id, userId, operationId, attempt: attempts, followStatus: "following" },
+      } }).catch(() => {});
+    }
+
+    if (requireVerifiedEmail(automation)) {
+      if (!await canSendResult()) return;
+      const claim = await createGiftClaim({
+        automationId: automation.id,
+        recipientId: userId,
+        recipientName: commenterName,
+        followConfirmedAt: new Date(),
+      });
+      const text = claim.stage === "complete" ? SAFE_FOLLOW_MESSAGES.claimComplete
+        : claim.stage === "verified" ? SAFE_FOLLOW_MESSAGES.claimPending
+        : SAFE_FOLLOW_MESSAGES.emailRequest;
+      const buttonTitle = claim.stage === "complete" ? SAFE_FOLLOW_MESSAGES.claimHistoryButton
+        : claim.stage === "verified" ? SAFE_FOLLOW_MESSAGES.claimStatusButton
+        : SAFE_FOLLOW_MESSAGES.emailButton;
+      responseSent = await sendPostbackOnce({
+        operationId,
+        isCurrent: canSendResult,
+        send: () => boundedFollowSend(() => sendDirectMessageWithLinkButton({
+          context: accessToken,
+          instagramAccountId: automation.instagramAccount.instagramId,
+          userId,
+          text,
+          buttons: [{ title: buttonTitle, url: claim.url }],
+        })),
+      });
       return;
     }
-  }
 
-  if (requireVerifiedEmail(automation)) {
-    const claim = await createGiftClaim({
-      automationId: automation.id,
-      recipientId: userId,
-      recipientName: commenterName,
-      followConfirmedAt: new Date(),
-    });
-    await sendPostbackOnce({
-      operationId,
-      send: () => sendDirectMessageWithLinkButton({
-        context: accessToken,
-        instagramAccountId: automation.instagramAccount.instagramId,
-        userId,
-        text: SAFE_FOLLOW_MESSAGES.emailRequest,
-        buttons: [{ title: SAFE_FOLLOW_MESSAGES.emailButton, url: claim.url }],
-      }),
-    });
-    return;
-  }
-
-  const usage = await reserveWorkspaceDMSend(automation.workspaceId);
-  if (!usage.allowed) {
-    await prisma.dmLog.upsert({
-      where: {
-        automationId_commentId: {
-          automationId: automation.id,
-          commentId: dedupeId,
+    const usage = await reserveWorkspaceDMSend(automation.workspaceId);
+    if (!usage.allowed) {
+      await prisma.dmLog.upsert({
+        where: {
+          automationId_commentId: {
+            automationId: automation.id,
+            commentId: dedupeId,
+          },
         },
-      },
-      create: {
-        workspaceId: automation.workspaceId,
-        automationId: automation.id,
-        instagramAccountId: automation.instagramAccountId,
-        commenterId: userId,
-        commenterName,
-        commentText: "(button tap)",
-        commentId: dedupeId,
-        status: "SKIPPED_PLAN_LIMIT",
-        errorMessage: `Monthly DM limit reached (${usage.limit})`,
-      },
-      update: { status: "SKIPPED_PLAN_LIMIT" },
-    });
-    return;
-  }
+        create: {
+          workspaceId: automation.workspaceId,
+          automationId: automation.id,
+          instagramAccountId: automation.instagramAccountId,
+          commenterId: userId,
+          commenterName,
+          commentText: "(button tap)",
+          commentId: dedupeId,
+          status: "SKIPPED_PLAN_LIMIT",
+          errorMessage: `Monthly DM limit reached (${usage.limit})`,
+        },
+        update: { status: "SKIPPED_PLAN_LIMIT" },
+      });
+      return;
+    }
 
-  try {
-    const delivered = await sendPostbackOnce({
-      operationId,
-      send: () =>
-        sendRevealDirectMessage({
-          accessToken: accessToken,
-          automation: automation,
-          userId: userId,
-          commenterName: commenterName,
-          context: "postback",
-        }),
-    });
-    if (!delivered) {
-      await releaseWorkspaceDMReservation(
+    try {
+      const delivered = await sendPostbackOnce({
+        operationId,
+        isCurrent: canSendResult,
+        send: () =>
+          boundedFollowSend(() => sendRevealDirectMessage({
+            accessToken: accessToken,
+            automation: automation,
+            userId: userId,
+            commenterName: commenterName,
+            context: "postback",
+          })),
+      });
+      if (!delivered) {
+        await releaseWorkspaceDMReservation(
+          automation.workspaceId,
+          usage.periodStart,
+        );
+        return;
+      }
+      responseSent = true;
+      // Optional appreciation follow-up: once the link has been delivered, send a
+      // short thank-you. It is scheduled as its own delayed job so it can go out
+      // some minutes later (followUpDelayMinutes) rather than immediately. The
+      // deterministic job id dedupes repeat button taps to one follow-up per user.
+      if (automation.followUpEnabled && automation.followUpMessage?.trim()) {
+        const delayMs =
+          Math.max(0, automation.followUpDelayMinutes ?? 0) * 60_000;
+        await getDMQueue().add(
+          FOLLOWUP_JOB_NAME,
+          {
+            instagramAccountId: automation.instagramAccount.instagramId,
+            accountConnectionId: automation.instagramAccountId,
+            userId,
+            automationId: automation.id,
+            commenterName,
+          },
+          {
+            delay: delayMs,
+            jobId: `followup_${automation.id}_${userId}`,
+          },
+        );
+      }
+      await prisma.dmLog.upsert({
+        where: {
+          automationId_commentId: {
+            automationId: automation.id,
+            commentId: dedupeId,
+          },
+        },
+        create: {
+          workspaceId: automation.workspaceId,
+          automationId: automation.id,
+          instagramAccountId: automation.instagramAccountId,
+          commenterId: userId,
+          commenterName,
+          commentText: "(button tap)",
+          commentId: dedupeId,
+          status: "SENT",
+          dmSentAt: new Date(),
+        },
+        update: { status: "SENT", dmSentAt: new Date(), errorMessage: null },
+      });
+    } catch (originalError) {
+      const error = classifySendError(originalError);
+      if (isConfirmedSendRejection(error)) await releaseWorkspaceDMReservation(
         automation.workspaceId,
         usage.periodStart,
       );
-      return;
-    }
-    // Optional appreciation follow-up: once the link has been delivered, send a
-    // short thank-you. It is scheduled as its own delayed job so it can go out
-    // some minutes later (followUpDelayMinutes) rather than immediately. The
-    // deterministic job id dedupes repeat button taps to one follow-up per user.
-    if (automation.followUpEnabled && automation.followUpMessage?.trim()) {
-      const delayMs =
-        Math.max(0, automation.followUpDelayMinutes ?? 0) * 60_000;
-      await getDMQueue().add(
-        FOLLOWUP_JOB_NAME,
-        {
-          instagramAccountId: automation.instagramAccount.instagramId,
-          accountConnectionId: automation.instagramAccountId,
-          userId,
+
+      // The read fallback is speculative: it only runs when the user read the
+      // opening DM and never tapped the button, which means they never messaged
+      // us, which means the 24-hour window is closed and Meta rejects the send
+      // ("outside of allowed window"). That is the expected outcome here, not a
+      // failure the user can act on — so don't log it as FAILED and don't retry
+      // it against a window that cannot reopen on its own. It still delivers in
+      // the case that does work: the user replied by typing instead of tapping.
+      if (fallback && !isDeliveryUnconfirmed(error)) {
+        console.log(
+          "[DM Worker] Read fallback not delivered (messaging window closed):",
+          formatError(error),
+        );
+        return;
+      }
+
+      await prisma.dmLog.upsert({
+        where: {
+          automationId_commentId: {
+            automationId: automation.id,
+            commentId: dedupeId,
+          },
+        },
+        create: {
+          workspaceId: automation.workspaceId,
           automationId: automation.id,
+          instagramAccountId: automation.instagramAccountId,
+          commenterId: userId,
           commenterName,
-        },
-        {
-          delay: delayMs,
-          jobId: `followup_${automation.id}_${userId}`,
-        },
-      );
-    }
-    await prisma.dmLog.upsert({
-      where: {
-        automationId_commentId: {
-          automationId: automation.id,
+          commentText: "(button tap)",
           commentId: dedupeId,
+          status: "FAILED",
+          errorMessage: formatError(error),
+          dmDeliveryUnconfirmed: isDeliveryUnconfirmed(error),
         },
-      },
-      create: {
-        workspaceId: automation.workspaceId,
-        automationId: automation.id,
-        instagramAccountId: automation.instagramAccountId,
-        commenterId: userId,
-        commenterName,
-        commentText: "(button tap)",
-        commentId: dedupeId,
-        status: "SENT",
-        dmSentAt: new Date(),
-      },
-      update: { status: "SENT", dmSentAt: new Date(), errorMessage: null },
-    });
-  } catch (originalError) {
-    const error = classifySendError(originalError);
-    if (isConfirmedSendRejection(error)) await releaseWorkspaceDMReservation(
-      automation.workspaceId,
-      usage.periodStart,
-    );
-
-    // The read fallback is speculative: it only runs when the user read the
-    // opening DM and never tapped the button, which means they never messaged
-    // us, which means the 24-hour window is closed and Meta rejects the send
-    // ("outside of allowed window"). That is the expected outcome here, not a
-    // failure the user can act on — so don't log it as FAILED and don't retry
-    // it against a window that cannot reopen on its own. It still delivers in
-    // the case that does work: the user replied by typing instead of tapping.
-    if (fallback && !isDeliveryUnconfirmed(error)) {
-      console.log(
-        "[DM Worker] Read fallback not delivered (messaging window closed):",
-        formatError(error),
-      );
-      return;
+        update: {
+          status: "FAILED",
+          errorMessage: formatError(error),
+          dmDeliveryUnconfirmed: isDeliveryUnconfirmed(error),
+        },
+      });
+      throw error;
     }
-
-    await prisma.dmLog.upsert({
-      where: {
-        automationId_commentId: {
-          automationId: automation.id,
-          commentId: dedupeId,
-        },
-      },
-      create: {
-        workspaceId: automation.workspaceId,
-        automationId: automation.id,
-        instagramAccountId: automation.instagramAccountId,
-        commenterId: userId,
-        commenterName,
-        commentText: "(button tap)",
-        commentId: dedupeId,
-        status: "FAILED",
-        errorMessage: formatError(error),
-        dmDeliveryUnconfirmed: isDeliveryUnconfirmed(error),
-      },
-      update: {
-        status: "FAILED",
-        errorMessage: formatError(error),
-        dmDeliveryUnconfirmed: isDeliveryUnconfirmed(error),
-      },
-    });
-    throw error;
+  } finally {
+    if (gateKey) await transitionFollowGate(gateKey, "release", operationId, responseSent ? "sent" : "");
   }
 }
 

@@ -31,12 +31,14 @@ export async function zernioRequest<T>({
   method = "GET",
   body,
   idempotencyKey,
+  signal,
 }: {
   apiKey: string;
   path: string;
   method?: "GET" | "POST" | "PUT" | "DELETE";
   body?: unknown;
   idempotencyKey?: string;
+  signal?: AbortSignal;
 }): Promise<T> {
   if (!path.startsWith("/") || path.startsWith("//"))
     throw new Error("Invalid Zernio API path");
@@ -49,7 +51,7 @@ export async function zernioRequest<T>({
     },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     cache: "no-store",
-    signal: AbortSignal.timeout(30_000),
+    signal: signal ?? AbortSignal.timeout(30_000),
   }).catch(() => {
     throw new ZernioApiError(502);
   });

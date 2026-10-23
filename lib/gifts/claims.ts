@@ -61,8 +61,13 @@ export async function createGiftClaim(args: { automationId: string; recipientId:
       recipientName: args.recipientName, followConfirmedAt: args.followConfirmedAt, expiresAt },
     update: { recipientName: args.recipientName, followConfirmedAt: args.followConfirmedAt, expiresAt, nextAttemptAt: now },
   });
-  if (claim.emailVerifiedAt) await enqueueGiftClaim(claim.id);
-  return { claimId: claim.id, url: giftPageUrl("claim", signGiftAccess(claim.id, "claim", claim.expiresAt)) };
+  const stage = claim.igStatus === "SENT" && claim.emailStatus === "SENT"
+    ? "complete" : claim.emailVerifiedAt ? "verified" : "unverified";
+  if (stage === "verified") await enqueueGiftClaim(claim.id);
+  return {
+    claimId: claim.id, stage, igStatus: claim.igStatus, emailStatus: claim.emailStatus,
+    url: giftPageUrl("claim", signGiftAccess(claim.id, "claim", claim.expiresAt)),
+  };
 }
 
 export async function getGiftClaimView(token: string) {

@@ -107,4 +107,35 @@ describe("truthful gift delivery notices", () => {
     expect(html).not.toContain("之前暫停寄送");
     expect(html).toContain("Email 已交給寄信服務");
   });
+
+  it("labels completed delivery as prior history with the prior verified mailbox and no new gift action", () => {
+    const html = renderToStaticMarkup(createElement(GiftDeliveryStatus, {
+      claim: { ...readyClaim, stage: "complete", igStatus: "SENT", emailStatus: "SENT" },
+    }));
+    expect(html).toContain("先前領取紀錄</h1>");
+    expect(html).toContain("此活動的禮物先前已透過 Instagram 私訊送出");
+    expect(html).toContain("本次開啟不會重新寄送");
+    expect(html).toContain("先前驗證信箱：a***@example.com");
+    expect(html).not.toContain("Email 已確認</h1>");
+    expect(html).not.toContain("已安排透過");
+    expect(html).not.toMatch(/youtube|youtu\.be|href=|<form|<input|<button/i);
+  });
+
+  it("does not invent a previous verified mailbox when it is unavailable", () => {
+    const html = renderToStaticMarkup(createElement(GiftDeliveryStatus, {
+      claim: { ...readyClaim, stage: "complete", igStatus: "SENT", emailStatus: "SENT", emailMasked: null },
+    }));
+    expect(html).toContain("先前領取紀錄</h1>");
+    expect(html).toContain("本次開啟不會重新寄送");
+    expect(html).not.toContain("先前驗證信箱");
+  });
+
+  it.each([readyClaim, null])("keeps pending and newly verified delivery separate from prior history", (claim) => {
+    const html = renderToStaticMarkup(createElement(GiftDeliveryStatus, { claim }));
+    expect(html).toContain("Email 已確認</h1>");
+    expect(html).toContain("已安排透過 Instagram 私訊與 Email 傳送禮物，請稍候。");
+    expect(html).not.toContain("先前領取紀錄");
+    expect(html).not.toContain("先前驗證信箱");
+    expect(html).not.toContain("本次開啟不會重新寄送");
+  });
 });

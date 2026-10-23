@@ -21,7 +21,7 @@ const {
 } = vi.hoisted(() => ({
   mockPrisma: {
     zernioConnection: { findUnique: vi.fn() },
-    postbackDelivery: { create: vi.fn(), delete: vi.fn() },
+    postbackDelivery: { create: vi.fn(), delete: vi.fn(), findUnique: vi.fn() },
     automation: {
       findMany: vi.fn(),
       findFirst: vi.fn(),
@@ -150,6 +150,7 @@ vi.mock("bullmq", () => {
 import { MetaApiError, RateLimitError } from "@/lib/meta/client";
 import { createDMWorker } from "../lib/queue/dm-worker";
 import { getRedisConnection } from "@/lib/queue/client";
+import { memoryGateRedis } from "./helpers/follow-gate-redis";
 import { SAFE_FOLLOW_MESSAGES } from "../lib/instagram/follow-policy";
 
 const usagePeriodStart = new Date("2026-05-01T00:00:00.000Z");
@@ -232,8 +233,10 @@ function createMockPostbackJob(
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(getRedisConnection).mockReturnValue(memoryGateRedis() as never);
+  mockPrisma.postbackDelivery.findUnique.mockReset().mockResolvedValue(null);
   vi.stubEnv("REQUIRE_VERIFIED_EMAIL", "false");
-  mockCreateGiftClaim.mockReset().mockResolvedValue({ claimId: "claim_1", url: "https://example.com/gift/claim-token" });
+  mockCreateGiftClaim.mockReset().mockResolvedValue({ claimId: "claim_1", stage: "unverified", igStatus: "PENDING", emailStatus: "PENDING", url: "https://example.com/gift/claim-token" });
   mockProcessGiftDelivery.mockReset().mockResolvedValue(undefined);
   mockPrisma.postbackDelivery.create.mockReset().mockResolvedValue({});
   mockPrisma.postbackDelivery.delete.mockReset().mockResolvedValue({});
@@ -301,7 +304,7 @@ beforeEach(() => {
     recipient_id: "commenter_999",
     message_id: "msg_006",
   });
-  mockGetUserFollowStatus.mockResolvedValue(true);
+  mockGetUserFollowStatus.mockReset().mockResolvedValue(true);
 });
 
 describe("DM Worker — verified email gate", () => {
@@ -323,7 +326,7 @@ describe("DM Worker — verified email gate", () => {
     vi.stubEnv("REQUIRE_CONFIRMED_FOLLOW", "false");
     mockPrisma.automation.findMany.mockResolvedValue([emailCampaign()]);
     mockPrisma.automation.findFirst.mockResolvedValue(emailCampaign());
-    vi.mocked(getRedisConnection).mockReturnValue({ set: vi.fn().mockResolvedValue("OK") } as never);
+    vi.mocked(getRedisConnection).mockReturnValue(memoryGateRedis() as never);
   });
   afterEach(() => vi.unstubAllEnvs());
 
@@ -349,7 +352,7 @@ describe("DM Worker — verified email gate", () => {
     expect(mockSendDirectMessageWithLinkButton).toHaveBeenCalledWith("decrypted_token", "ig_456", "commenter_999", SAFE_FOLLOW_MESSAGES.emailRequest, [{ title: "填寫 Email", url: "https://example.com/gift/claim-token" }]);
     expect(JSON.stringify(mockSendDirectMessageWithLinkButton.mock.calls)).not.toMatch(/SECRET_GIFT|youtube|private-gift/);
     expect(mockPrisma.dmLog.upsert).not.toHaveBeenCalled();
-    expect(mockQueueAdd).not.toHaveBeenCalled();
+    expect(mockQueueAdd.mock.calls.every(([, data]) => Boolean(data.followTimeoutCheckId))).toBe(true);
   });
 
   it.each([false, null])("follow status %s cannot create an email claim or release gifts", async (status) => {
@@ -357,7 +360,59 @@ describe("DM Worker — verified email gate", () => {
     await getProcessor()(createMockPostbackJob({ instagramAccountId: "ig_456", userId: "commenter_999", payload: "followcheck:auto_789", followRecheckAttempt: 2 }));
     expect(mockCreateGiftClaim).not.toHaveBeenCalled();
     expect(mockSendDirectMessageWithLinkButton).not.toHaveBeenCalled();
-    expect(mockSendDirectMessageWithButton).toHaveBeenCalledWith("decrypted_token", "ig_456", "commenter_999", status === false ? SAFE_FOLLOW_MESSAGES.retryPrompt : SAFE_FOLLOW_MESSAGES.unknown, "確認追蹤", "followcheck:auto_789");
+    expect(mockSendDirectMessageWithButton).toHaveBeenCalledWith("decrypted_token", "ig_456", "commenter_999", status === false ? SAFE_FOLLOW_MESSAGES.retryPrompt : SAFE_FOLLOW_MESSAGES.unknown, "我已完成追蹤", "followcheck:auto_789");
+  });
+
+  it.each([false, null, "error"] as const)("a previously completed claim cannot bypass fresh follow status %s", async (status) => {
+    mockCreateGiftClaim.mockResolvedValue({ claimId: "claim_1", stage: "complete", igStatus: "SENT", emailStatus: "SENT", url: "https://example.com/gift/claim-token" });
+    mockPrisma.dmLog.findUnique.mockResolvedValue({ status: "SENT" });
+    if (status === "error") mockGetUserFollowStatus.mockRejectedValue(new Error("follow lookup unavailable"));
+    else mockGetUserFollowStatus.mockResolvedValue(status);
+    await getProcessor()(createMockPostbackJob({ instagramAccountId: "ig_456", userId: "commenter_999", payload: "followcheck:auto_789", mid: "completed-claim-tap", followRecheckAttempt: 2 }));
+    expect(mockGetUserFollowStatus).toHaveBeenCalledTimes(status === false ? 1 : 2);
+    expect(mockCreateGiftClaim).not.toHaveBeenCalled();
+    expect(mockProcessGiftDelivery).not.toHaveBeenCalled();
+    expect(mockSendDirectMessageWithLinkButton).not.toHaveBeenCalled();
+    expect(mockPrisma.operationalEvent.create).toHaveBeenCalledExactlyOnceWith({ data: expect.objectContaining({
+      message: "Follow gate rejected a button tap",
+      payload: expect.objectContaining({ operationId: expect.stringMatching(/^[a-f0-9]{64}$/), attempt: status === false ? 1 : 2, followStatus: status === false ? "not_following" : "unknown" }),
+    }) });
+  });
+
+  it.each([
+    { stage: "complete", igStatus: "SENT", emailStatus: "SENT", text: SAFE_FOLLOW_MESSAGES.claimComplete, title: "查看領取紀錄" },
+    { stage: "verified", igStatus: "SENT", emailStatus: "PENDING", text: SAFE_FOLLOW_MESSAGES.claimPending, title: "查看寄送狀態" },
+    { stage: "verified", igStatus: "SENT", emailStatus: "UNCONFIRMED", text: SAFE_FOLLOW_MESSAGES.claimPending, title: "查看寄送狀態" },
+  ])("a fresh true follow shows $stage / $emailStatus history without a new gift or email request", async ({ stage, igStatus, emailStatus, text, title }) => {
+    mockCreateGiftClaim.mockResolvedValue({ claimId: "claim_1", stage, igStatus, emailStatus, url: "https://example.com/gift/claim-token" });
+    await getProcessor()(createMockPostbackJob({ instagramAccountId: "ig_456", userId: "commenter_999", payload: "followcheck:auto_789", mid: "history-tap" }));
+    expect(mockGetUserFollowStatus).toHaveBeenCalledTimes(1);
+    expect(mockGetUserFollowStatus.mock.invocationCallOrder[0]).toBeLessThan(mockCreateGiftClaim.mock.invocationCallOrder[0]);
+    expect(mockSendDirectMessageWithLinkButton).toHaveBeenCalledExactlyOnceWith("decrypted_token", "ig_456", "commenter_999", text, [{ title, url: "https://example.com/gift/claim-token" }]);
+    expect(JSON.stringify(mockSendDirectMessageWithLinkButton.mock.calls)).not.toMatch(/填寫 Email|SECRET_GIFT|youtube|private-gift/);
+    expect(mockProcessGiftDelivery).not.toHaveBeenCalled();
+    expect(mockQueueAdd.mock.calls.every(([, data]) => Boolean(data.followTimeoutCheckId))).toBe(true);
+    expect(mockPrisma.dmLog.upsert).not.toHaveBeenCalled();
+  });
+
+  it("logs the terminal follow result with the tap identity and bounded retry number", async () => {
+    const tap = { instagramAccountId: "ig_456", userId: "commenter_999", payload: "followcheck:auto_789", mid: "audit-tap-private-body" };
+    mockGetUserFollowStatus.mockResolvedValueOnce(null).mockResolvedValueOnce(true);
+    await getProcessor()(createMockPostbackJob(tap));
+    expect(mockPrisma.operationalEvent.create).toHaveBeenCalledTimes(1);
+    const event = mockPrisma.operationalEvent.create.mock.calls[0][0].data;
+    expect(event).toMatchObject({ message: "Follow gate confirmed a button tap", payload: { attempt: 2, followStatus: "following", operationId: expect.stringMatching(/^[a-f0-9]{64}$/) } });
+    expect(mockPrisma.postbackDelivery.create.mock.calls.at(-1)![0].data.id).toBe(event.payload.operationId);
+    expect(JSON.stringify(event)).not.toMatch(/decrypted_token|claim-token|audit-tap-private-body|SECRET_GIFT|youtube/);
+    expect(mockSendDirectMessageWithLinkButton).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([false, true])("audit write failure does not change the follow decision (%s)", async (follows) => {
+    mockPrisma.operationalEvent.create.mockRejectedValueOnce(new Error("diagnostic store unavailable"));
+    mockGetUserFollowStatus.mockResolvedValue(follows);
+    await expect(getProcessor()(createMockPostbackJob({ instagramAccountId: "ig_456", userId: "commenter_999", payload: "followcheck:auto_789", followRecheckAttempt: 2 }))).resolves.toBeUndefined();
+    expect(mockCreateGiftClaim).toHaveBeenCalledTimes(follows ? 1 : 0);
+    expect(mockSendDirectMessageWithLinkButton).toHaveBeenCalledTimes(follows ? 1 : 0);
   });
 
   it("keeps read fallback and old follow-up jobs from bypassing email verification", async () => {
@@ -1570,227 +1625,8 @@ describe("durable Zernio postback delivery", () => {
   });
 });
 
-describe("DM Worker — follow-gate re-check", () => {
-  const gated = { ...mockAutomation, requireFollow: true, trackedLinks: [] };
-
-  it("re-checks a first false follow later instead of rejecting the tap", async () => {
-    mockPrisma.automation.findFirst.mockResolvedValue(gated);
-    mockGetUserFollowStatus.mockResolvedValue(false);
-
-    await getProcessor()(
-      createMockPostbackJob({
-        instagramAccountId: "ig_456",
-        userId: "commenter_999",
-        payload: "followcheck:auto_789",
-      })
-    );
-
-    // Nothing is sent yet: a brand-new follow may simply not have registered.
-    expect(mockSendDirectMessageWithButton).not.toHaveBeenCalled();
-    expect(mockSendDirectMessage).not.toHaveBeenCalled();
-    expect(mockQueueAdd).toHaveBeenCalledWith(
-      "process-postback",
-      expect.objectContaining({ followRecheck: true, userId: "commenter_999" }),
-      expect.objectContaining({ delay: expect.any(Number) })
-    );
-  });
-
-  it("prompts and records the rejection when the last re-check still finds no follow", async () => {
-    mockPrisma.automation.findFirst.mockResolvedValue(gated);
-    mockGetUserFollowStatus.mockResolvedValue(false);
-
-    await getProcessor()(
-      createMockPostbackJob({
-        instagramAccountId: "ig_456",
-        userId: "commenter_999",
-        payload: "followcheck:auto_789",
-        followRecheck: true,
-        followRecheckAttempt: 2,
-      })
-    );
-
-    expect(mockSendDirectMessageWithButton).toHaveBeenCalledTimes(1);
-    expect(mockPrisma.operationalEvent.create).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({
-          message: "Follow gate rejected a button tap",
-        }),
-      })
-    );
-    // A re-check never queues another re-check.
-    expect(mockQueueAdd).not.toHaveBeenCalled();
-  });
-
-  it("buckets the re-check id by time so a later tap is not blocked by an old job", async () => {
-    mockPrisma.automation.findFirst.mockResolvedValue(gated);
-    mockGetUserFollowStatus.mockResolvedValue(false);
-
-    await getProcessor()(
-      createMockPostbackJob({
-        instagramAccountId: "ig_456",
-        userId: "commenter_999",
-        payload: "followcheck:auto_789",
-      })
-    );
-
-    const [, , opts] = mockQueueAdd.mock.calls[0];
-    // A fixed per-user id would collide with the retained completed job of an
-    // earlier re-check and be dropped silently by BullMQ.
-    expect(opts.jobId).toMatch(/^postback_recheck_auto_789_commenter_999_1_\d+$/);
-  });
-
-  it("checks twice: soon after the tap, then again before giving up", async () => {
-    mockPrisma.automation.findFirst.mockResolvedValue(gated);
-    mockGetUserFollowStatus.mockResolvedValue(false);
-    const tap = {
-      instagramAccountId: "ig_456",
-      userId: "commenter_999",
-      payload: "followcheck:auto_789",
-    };
-
-    await getProcessor()(createMockPostbackJob(tap));
-    expect(mockQueueAdd).toHaveBeenLastCalledWith(
-      "process-postback",
-      expect.objectContaining({ followRecheckAttempt: 1 }),
-      expect.objectContaining({ delay: 20_000 })
-    );
-
-    await getProcessor()(
-      createMockPostbackJob({ ...tap, followRecheck: true, followRecheckAttempt: 1 })
-    );
-    expect(mockQueueAdd).toHaveBeenLastCalledWith(
-      "process-postback",
-      expect.objectContaining({ followRecheckAttempt: 2 }),
-      expect.objectContaining({ delay: 40_000 })
-    );
-    // Neither pass has given up yet, so neither re-sends the prompt.
-    expect(mockSendDirectMessageWithButton).not.toHaveBeenCalled();
-  });
-
-  it("treats a re-check queued before counting existed as the first one done", async () => {
-    mockPrisma.automation.findFirst.mockResolvedValue(gated);
-    mockGetUserFollowStatus.mockResolvedValue(false);
-
-    await getProcessor()(
-      createMockPostbackJob({
-        instagramAccountId: "ig_456",
-        userId: "commenter_999",
-        payload: "followcheck:auto_789",
-        followRecheck: true,
-      })
-    );
-
-    expect(mockQueueAdd).toHaveBeenCalledWith(
-      "process-postback",
-      expect.objectContaining({ followRecheckAttempt: 2 }),
-      expect.anything()
-    );
-    expect(mockSendDirectMessageWithButton).not.toHaveBeenCalled();
-  });
-
-  it("prompts a non-follower right away when the tap came from the opening DM", async () => {
-    mockPrisma.automation.findFirst.mockResolvedValue(gated);
-    mockGetUserFollowStatus.mockResolvedValue(false);
-
-    await getProcessor()(
-      createMockPostbackJob({
-        instagramAccountId: "ig_456",
-        userId: "commenter_999",
-        payload: "followcheck:auto_789:open",
-      })
-    );
-
-    // Tapping the opening DM is not a claim to follow, so there is nothing to
-    // wait for: the follow prompt goes out now, not after the re-check delay.
-    expect(mockSendDirectMessageWithButton).toHaveBeenCalledWith(
-      "decrypted_token",
-      "ig_456",
-      "commenter_999",
-      expect.any(String),
-      expect.any(String),
-      "followcheck:auto_789"
-    );
-    expect(mockQueueAdd).not.toHaveBeenCalled();
-    // Nor is it a rejection: they were never told to follow before this.
-    expect(mockPrisma.operationalEvent.create).not.toHaveBeenCalled();
-  });
-});
-
-describe("DM Worker — follow re-check acknowledgement", () => {
-  const gated = { ...mockAutomation, requireFollow: true, trackedLinks: [] };
-  const tap = {
-    instagramAccountId: "ig_456",
-    userId: "commenter_999",
-    payload: "followcheck:auto_789",
-  };
-  const mockRedisSet = vi.fn();
-
-  beforeEach(() => {
-    process.env.FOLLOW_RECHECK_ACK_MESSAGE = "Dame unos segundos que lo verifico";
-    mockRedisSet.mockReset().mockResolvedValue("OK");
-    vi.mocked(getRedisConnection).mockReturnValue({ set: mockRedisSet } as never);
-    mockPrisma.automation.findFirst.mockResolvedValue(gated);
-    mockGetUserFollowStatus.mockResolvedValue(false);
-  });
-
-  afterEach(() => {
-    delete process.env.FOLLOW_RECHECK_ACK_MESSAGE;
-  });
-
-  it("answers a not-yet-visible follow right away instead of leaving the chat silent", async () => {
-    await getProcessor()(createMockPostbackJob(tap));
-
-    expect(mockSendDirectMessage).toHaveBeenCalledWith(
-      "decrypted_token",
-      "ig_456",
-      "commenter_999",
-      "Dame unos segundos que lo verifico"
-    );
-    // The re-check is still what decides; the acknowledgement only fills the wait.
-    expect(mockQueueAdd).toHaveBeenCalledWith(
-      "process-postback",
-      expect.objectContaining({ followRecheckAttempt: 1 }),
-      expect.anything()
-    );
-  });
-
-  it("acknowledges a burst of taps only once", async () => {
-    mockRedisSet.mockResolvedValueOnce("OK").mockResolvedValueOnce(null);
-
-    await getProcessor()(createMockPostbackJob(tap));
-    await getProcessor()(createMockPostbackJob(tap));
-
-    expect(mockSendDirectMessage).toHaveBeenCalledTimes(1);
-  });
-
-  it("does not acknowledge again on the re-check passes", async () => {
-    await getProcessor()(
-      createMockPostbackJob({ ...tap, followRecheck: true, followRecheckAttempt: 1 })
-    );
-
-    expect(mockSendDirectMessage).not.toHaveBeenCalled();
-  });
-
-  it("still re-checks when the acknowledgement cannot be sent", async () => {
-    mockSendDirectMessage.mockRejectedValueOnce(new Error("boom"));
-
-    await expect(getProcessor()(createMockPostbackJob(tap))).resolves.toBeUndefined();
-    expect(mockQueueAdd).toHaveBeenCalledWith(
-      "process-postback",
-      expect.objectContaining({ followRecheckAttempt: 1 }),
-      expect.anything()
-    );
-  });
-
-  it("sends nothing extra when no acknowledgement message is configured", async () => {
-    delete process.env.FOLLOW_RECHECK_ACK_MESSAGE;
-
-    await getProcessor()(createMockPostbackJob(tap));
-
-    expect(mockSendDirectMessage).not.toHaveBeenCalled();
-    expect(mockRedisSet).not.toHaveBeenCalled();
-  });
-});
+// Bucketed delayed re-check/instant-ack behavior was replaced in phase 1-B.
+// Real concurrency, timeout and recovery regressions live in follow-gate-worker.test.ts.
 
 describe("ambiguous Meta sends and durable comment claims", () => {
   const withLinks = { ...mockAutomation, trackedLinks: [{ slug: "resource", label: null, destinationUrl: "https://example.com" }] };
@@ -1982,7 +1818,7 @@ describe("DM Worker — confirmed-follow gift delivery", () => {
     fetchMock.mockReset();
     vi.stubGlobal("fetch", fetchMock);
     mockPrisma.zernioConnection.findUnique.mockResolvedValue({ apiKey: "encrypted" });
-    vi.mocked(getRedisConnection).mockReturnValue({ set: vi.fn().mockResolvedValue("OK") } as never);
+    vi.mocked(getRedisConnection).mockReturnValue(memoryGateRedis() as never);
   });
 
   afterEach(() => {
@@ -1998,7 +1834,7 @@ describe("DM Worker — confirmed-follow gift delivery", () => {
     await getProcessor()(job(path));
 
     const initialRequest = path === "comment" || path === "message";
-    if (provider === "META") expect(mockGetUserFollowStatus).toHaveBeenCalledTimes(initialRequest ? 0 : 1);
+    if (provider === "META") expect(mockGetUserFollowStatus).toHaveBeenCalledTimes(initialRequest ? 0 : (path === "postback" && status === null ? 2 : 1));
     else expect(fetchMock.mock.calls.some(([url]) => url.includes("/follow-status/") && url.endsWith("?refresh=true"))).toBe(!initialRequest);
     if (!initialRequest && status === true) expect(JSON.stringify(outgoing())).toContain(gift);
     else expectNoGift();
@@ -2031,7 +1867,7 @@ describe("DM Worker — confirmed-follow gift delivery", () => {
 
     await processJob(job("postback", { payload }));
 
-    expect(mockGetUserFollowStatus).toHaveBeenCalledTimes(1);
+    expect(mockGetUserFollowStatus).toHaveBeenCalledTimes(status === null ? 2 : 1);
     if (status === true) {
       expect(mockSendDirectMessageWithLinkButton).toHaveBeenCalledTimes(1);
       expect(mockPrisma.dmLog.upsert).toHaveBeenCalledWith(expect.objectContaining({
@@ -2040,7 +1876,7 @@ describe("DM Worker — confirmed-follow gift delivery", () => {
     } else {
       expectNoGift();
       expect(mockSendDirectMessageWithLinkButton).not.toHaveBeenCalled();
-      expect(mockQueueAdd).toHaveBeenCalledWith("process-postback", expect.objectContaining({ followRecheckAttempt: 1 }), expect.anything());
+      expect(mockQueueAdd).toHaveBeenCalledWith("process-postback", expect.objectContaining({ followTimeoutCheckId: expect.any(String) }), expect.anything());
     }
   });
 
@@ -2051,7 +1887,7 @@ describe("DM Worker — confirmed-follow gift delivery", () => {
       setCampaign(campaign());
       followStatus(status);
       await getProcessor()(job("postback", { payload }));
-      expect(mockGetUserFollowStatus).toHaveBeenCalledTimes(1);
+      expect(mockGetUserFollowStatus).toHaveBeenCalledTimes(status === null ? 2 : 1);
       if (status === true) expect(JSON.stringify(outgoing())).toContain(gift);
       else expectNoGift();
     },
@@ -2069,9 +1905,7 @@ describe("DM Worker — confirmed-follow gift delivery", () => {
     mockGetUserFollowStatus.mockResolvedValueOnce(null).mockResolvedValueOnce(true);
     const processJob = getProcessor();
     await processJob(job("postback"));
-    expectNoGift();
-    expect(mockQueueAdd).toHaveBeenCalledWith("process-postback", expect.objectContaining({ followRecheckAttempt: 1 }), expect.anything());
-    await processJob(job("postback", { followRecheck: true, followRecheckAttempt: 1 }));
+    expect(mockGetUserFollowStatus).toHaveBeenCalledTimes(2);
     expect(mockSendDirectMessageWithLinkButton).toHaveBeenCalledTimes(1);
   });
 
@@ -2100,7 +1934,7 @@ describe("DM Worker — confirmed-follow gift delivery", () => {
       const processJob = getProcessor();
       vi.stubEnv("REQUIRE_CONFIRMED_FOLLOW", "true");
       await processJob(job(path, { followRecheck: true, followRecheckAttempt: 2 }));
-      expect(mockGetUserFollowStatus).toHaveBeenCalledTimes(path === "comment" || path === "message" ? 0 : 1);
+      expect(mockGetUserFollowStatus).toHaveBeenCalledTimes(path === "comment" || path === "message" ? 0 : (path === "postback" && status === null ? 2 : 1));
       expectNoGift();
     },
   );
@@ -2144,15 +1978,15 @@ describe("DM Worker — confirmed-follow gift delivery", () => {
     expect(mockReserveWorkspaceDMSend).not.toHaveBeenCalled();
   });
 
-  it("uses a safe acknowledgement instead of an unsafe configured gift before confirmation", async () => {
+  it("does not send an unsafe configured acknowledgement for a check under three seconds", async () => {
     vi.stubEnv("REQUIRE_CONFIRMED_FOLLOW", "true");
     vi.stubEnv("FOLLOW_RECHECK_ACK_MESSAGE", `${gift} ${giftUrl}`);
     setCampaign({ ...campaign(), requireFollow: false });
     followStatus(null);
     await getProcessor()(job("postback"));
-    expect(mockSendDirectMessage).toHaveBeenCalledTimes(1);
+    expect(mockSendDirectMessage).not.toHaveBeenCalled();
     expectNoGift();
-    expect(mockQueueAdd).toHaveBeenCalledWith("process-postback", expect.objectContaining({ followRecheckAttempt: 1 }), expect.anything());
+    expect(mockSendDirectMessageWithButton).toHaveBeenCalledTimes(1);
   });
 
   it("permits the confirmed gift and its text fallback when forced mode overrides an opted-out campaign", async () => {

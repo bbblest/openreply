@@ -1,4 +1,5 @@
 import { prisma } from '@/lib/db/client';
+import { createHash } from 'node:crypto';
 import { getDMQueue, MESSAGE_JOB_NAME, POSTBACK_JOB_NAME } from '@/lib/queue/client';
 import { parseCommentEvents, parseMessageEvents, parsePostbackEvents, parseReadEvents } from '@/lib/meta/webhook';
 import { Prisma, type InstagramProvider } from '@/app/generated/prisma/client';
@@ -72,6 +73,15 @@ export async function processInstagramWebhook({ payload: incoming, provider, wor
     );
 
     for (const event of postbackEvents) {
+      // Source timestamps remain stable across Meta redelivery. Do not merge
+      // every mid-less tap forever by using its fixed button payload as an id.
+      if (!event.mid && !event.eventAt) {
+        console.warn('[Webhook] Button event missing both id and timestamp; skipped');
+        continue;
+      }
+      const eventId = event.mid ?? createHash('sha256').update(JSON.stringify([
+        event.instagramAccountId, event.userId, event.payload, event.eventAt,
+      ])).digest('hex');
       await queue.add(
         POSTBACK_JOB_NAME,
         {
@@ -79,14 +89,11 @@ export async function processInstagramWebhook({ payload: incoming, provider, wor
           accountConnectionId: accountMap.get(event.instagramAccountId)?.id,
           userId: event.userId,
           payload: event.payload,
-          mid: event.mid,
+          mid: eventId,
+          eventAt: Math.min(event.eventAt ?? Date.now(), Date.now()),
         },
         {
-          // BullMQ forbids ":" in custom job ids, and the payload is
-          // "reveal:<id>", so build with underscores and strip any colons.
-          jobId: `postback_${event.instagramAccountId}_${event.userId}_${(
-            event.mid ?? event.payload
-          ).replace(/:/g, "_")}`,
+          jobId: `postback_${event.instagramAccountId}_${event.userId}_${Buffer.from(eventId).toString('base64url')}`,
         }
       );
     }

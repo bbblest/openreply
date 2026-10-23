@@ -72,6 +72,7 @@ interface WebhookEntry {
     };
   }>;
   messaging?: Array<{
+    timestamp?: number;
     sender?: { id?: string };
     recipient?: { id?: string };
     postback?: { mid?: string; title?: string; payload?: string };
@@ -83,6 +84,7 @@ interface WebhookEntry {
       is_deleted?: boolean;
       is_unsupported?: boolean;
       attachments?: Array<{ type?: string }>;
+      quick_reply?: { payload?: string };
     };
   }>;
 }
@@ -99,6 +101,7 @@ export interface WebhookPostbackEvent {
   userId: string;
   payload: string;
   mid?: string;
+  eventAt?: number;
 }
 
 export interface WebhookReadEvent {
@@ -174,19 +177,23 @@ export function parsePostbackEvents(
 
   for (const entry of payload.entry ?? []) {
     for (const messaging of entry.messaging ?? []) {
-      const postbackPayload = messaging.postback?.payload;
+      const postbackPayload = messaging.postback?.payload ?? messaging.message?.quick_reply?.payload;
       const userId = messaging.sender?.id;
       const accountId = entry.id ?? messaging.recipient?.id;
 
       if (!postbackPayload || !userId || !accountId) continue;
       // Ignore echoes of the account's own actions.
       if (userId === accountId) continue;
+      if (messaging.message?.is_echo || messaging.message?.is_deleted) continue;
+
+      const timestamp = messaging.timestamp ?? (entry.time ? (entry.time < 10_000_000_000 ? entry.time * 1000 : entry.time) : undefined);
 
       events.push({
         instagramAccountId: accountId,
         userId,
         payload: postbackPayload,
-        mid: messaging.postback?.mid,
+        mid: messaging.postback?.mid ?? messaging.message?.mid,
+        ...(timestamp && Number.isFinite(timestamp) && timestamp > 0 ? { eventAt: timestamp } : {}),
       });
     }
   }
@@ -215,6 +222,7 @@ export function parseMessageEvents(
     for (const messaging of entry.messaging ?? []) {
       const message = messaging.message;
       if (!message) continue;
+      if (message.quick_reply?.payload) continue;
       if (message.is_echo || message.is_deleted || message.is_unsupported) {
         continue;
       }

@@ -46,6 +46,10 @@ export interface ProcessPostbackJob {
   userId: string;
   payload: string;
   mid?: string;
+  // Source event time keeps a queued burst from turning into new checks later.
+  eventAt?: number;
+  // Durable watchdog: owns no API read, can only finish an expired check as unknown.
+  followTimeoutCheckId?: string;
   fallback?: boolean;
   // Set on the delayed second pass of a follow-gate check. Instagram does not
   // report a brand-new follow immediately, so the first `false` is re-checked

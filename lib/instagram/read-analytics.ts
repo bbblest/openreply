@@ -5,16 +5,19 @@ import type { InstagramContext, ZernioContext } from "./context";
 export async function getUserFollowStatus({
   context,
   recipientId,
+  signal,
 }: {
   context: InstagramContext;
   recipientId: string;
+  signal?: AbortSignal;
 }): Promise<boolean | null> {
   if (context.provider === "META")
-    return meta.getUserFollowStatus(context.accessToken, recipientId);
+    return meta.getUserFollowStatus(context.accessToken, recipientId, signal);
   try {
     const result = await zernioRequest<{ isFollower: boolean | null }>({
       apiKey: context.apiKey,
       path: `/accounts/${encodeURIComponent(context.accountId)}/follow-status/${encodeURIComponent(recipientId)}?refresh=true`,
+      signal: signal ?? AbortSignal.timeout(8_000),
     });
     return typeof result.isFollower === "boolean" ? result.isFollower : null;
   } catch {

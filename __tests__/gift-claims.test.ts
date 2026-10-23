@@ -153,6 +153,72 @@ beforeEach(() => {
 });
 afterEach(() => { vi.useRealTimers(); vi.unstubAllEnvs(); });
 
+describe("returning gift recipients", () => {
+  function revisit() {
+    return createGiftClaim({ automationId: claim.automationId, recipientId: claim.recipientId,
+      recipientName: claim.recipientName, followConfirmedAt: new Date(NOW) });
+  }
+
+  it("returns completed history without enqueueing or changing the original verification and deliveries", async () => {
+    claim.igStatus = "SENT";
+    claim.emailStatus = "SENT";
+    claim.igAttempts = 1;
+    claim.emailAttempts = 1;
+    claim.igSentAt = new Date(NOW.getTime() - 60_000);
+    claim.emailSentAt = new Date(NOW.getTime() - 55_000);
+    const history = {
+      email: claim.email, emailVersion: claim.emailVersion, emailVerifiedAt: claim.emailVerifiedAt,
+      verificationStatus: claim.verificationStatus, marketingConsent: claim.marketingConsent,
+      igStatus: claim.igStatus, emailStatus: claim.emailStatus, igAttempts: claim.igAttempts, emailAttempts: claim.emailAttempts,
+      igSentAt: claim.igSentAt, emailSentAt: claim.emailSentAt,
+    };
+    const result = await revisit();
+    expect(result).toMatchObject({ claimId: claim.id, stage: "complete", igStatus: "SENT", emailStatus: "SENT" });
+    expect(result.url).toContain("/gift/claim?token=");
+    expect(claim).toMatchObject(history);
+    expect(queueAdd).not.toHaveBeenCalled();
+    expect(verificationMail).not.toHaveBeenCalled();
+    expectNoGift();
+  });
+
+  it("keeps an unverified recipient in the email flow without a delivery job", async () => {
+    unverified();
+    claim.email = null;
+    expect(await revisit()).toMatchObject({ stage: "unverified", igStatus: "PENDING", emailStatus: "PENDING" });
+    expect(claim.emailVerifiedAt).toBeNull();
+    expect(queueAdd).not.toHaveBeenCalled();
+    expect(verificationMail).not.toHaveBeenCalled();
+    expectNoGift();
+  });
+
+  it("revisiting a verified partial delivery does not resend its successful channel", async () => {
+    claim.igStatus = "SENT";
+    claim.igAttempts = 1;
+    claim.igSentAt = new Date(NOW.getTime() - 60_000);
+    const originalSentAt = claim.igSentAt;
+    expect(await revisit()).toMatchObject({ stage: "verified", igStatus: "SENT", emailStatus: "PENDING" });
+    expect(queueAdd).toHaveBeenCalledTimes(1);
+    await sendGift();
+    expect(instagramSend).not.toHaveBeenCalled();
+    expect(deliveryMail).toHaveBeenCalledTimes(1);
+    expect(claim.igAttempts).toBe(1);
+    expect(claim.igSentAt).toEqual(originalSentAt);
+  });
+
+  it.each(["UNCONFIRMED", "SENDING", "FAILED"])("revisiting does not reset a stopped email channel (%s)", async (status) => {
+    claim.igStatus = "SENT";
+    claim.igAttempts = 1;
+    claim.emailStatus = status;
+    claim.emailAttempts = status === "FAILED" ? 3 : 1;
+    const attempts = claim.emailAttempts;
+    expect(await revisit()).toMatchObject({ stage: "verified", igStatus: "SENT", emailStatus: status });
+    await sendGift();
+    expectNoGift();
+    expect(claim.emailStatus).toBe(status);
+    expect(claim.emailAttempts).toBe(attempts);
+  });
+});
+
 describe("gift claim release gates", () => {
   it("never sends either gift channel before email verification", async () => {
     unverified();

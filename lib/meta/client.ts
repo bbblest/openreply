@@ -229,6 +229,7 @@ export async function sendDirectMessageWithButton(
     `${instagramGraphBase()}/${instagramAccountId}/messages`,
     {
       method: "POST",
+      signal: AbortSignal.timeout(8_000),
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${accessToken}`,
@@ -263,7 +264,8 @@ export async function sendDirectMessageWithButton(
  */
 export async function getUserFollowStatus(
   accessToken: string,
-  recipientId: string
+  recipientId: string,
+  signal?: AbortSignal,
 ): Promise<boolean | null> {
   const url = new URL(`${instagramGraphBase()}/${recipientId}`);
   url.searchParams.set("fields", "is_user_follow_business");
@@ -272,6 +274,7 @@ export async function getUserFollowStatus(
     const response = await fetch(url.toString(), {
       method: "GET",
       cache: "no-store",
+      signal: signal ?? AbortSignal.timeout(8_000),
       headers: { Authorization: `Bearer ${accessToken}`, "Cache-Control": "no-cache" },
     });
     if (!response.ok) return null;
@@ -356,6 +359,7 @@ export async function sendDirectMessage(
     `${instagramGraphBase()}/${instagramAccountId}/messages`,
     {
       method: "POST",
+      signal: AbortSignal.timeout(8_000),
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${accessToken}`,
@@ -385,6 +389,7 @@ export async function sendDirectMessageWithLinkButton(
     `${instagramGraphBase()}/${instagramAccountId}/messages`,
     {
       method: "POST",
+      signal: AbortSignal.timeout(8_000),
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${accessToken}`,

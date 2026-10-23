@@ -28,7 +28,7 @@ describe('Zernio event boundary', () => {
   });
   it('maps postbacks without also triggering a keyword DM', () => {
     const result = normalizeZernioEvent({ account, payload: { ...envelope, event: 'message.received', message: { platformMessageId: 'native-mid', direction: 'incoming', text: 'LINK', sender: { id: 'person1' } }, metadata: { postbackPayload: 'reveal:campaign1', postbackTitle: 'Open' } } });
-    expect(parsePostbackEvents(result!)).toEqual([{ instagramAccountId: 'ig1', userId: 'person1', payload: 'reveal:campaign1', mid: 'native-mid' }]);
+    expect(parsePostbackEvents(result!)).toEqual([{ instagramAccountId: 'ig1', userId: 'person1', payload: 'reveal:campaign1', mid: 'native-mid', eventAt: expect.any(Number) }]);
     expect(parseMessageEvents(result!)).toEqual([]);
   });
   it('maps inbound story text and read receipts to their existing handlers', () => {

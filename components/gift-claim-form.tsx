@@ -112,16 +112,21 @@ export function VerificationNotice({ verificationStatus, emailMasked, notice }: 
 }
 
 export function GiftDeliveryStatus({ claim }: { claim: ClaimStatus | null }) {
+  const historical = claim?.stage === "complete";
   const notice = claim?.stage === "ready" ? claim.notice : null;
-  return <div role="status" className="space-y-3 text-sm leading-relaxed">
-    <p>{claim?.stage === "complete"
-      ? "禮物已透過 Instagram 私訊送出，Email 已交給寄信服務。"
-      : notice ? "禮物尚未完成寄送，請查看下方狀態與提示。"
-        : "已安排透過 Instagram 私訊與 Email 傳送禮物，請稍候。"}</p>
-    {notice && <p className="rounded-lg border border-warning/30 bg-warning/5 p-3 font-medium">{notice}</p>}
-    <p className="text-muted">請回原本的 Instagram 私訊，並查看 Email 收件匣及垃圾郵件匣。</p>
-    {claim && <dl className="space-y-2 rounded-lg bg-surface p-3"><div><dt className="font-medium">Instagram 禮物</dt><dd>{deliveryLabel(claim.igStatus, false)}</dd></div><div><dt className="font-medium">Email 禮物</dt><dd>{deliveryLabel(claim.emailStatus, true)}</dd></div></dl>}
-  </div>;
+  return <>
+    <h1 className="text-xl font-semibold">{historical ? "先前領取紀錄" : "Email 已確認"}</h1>
+    <div role="status" className="space-y-3 text-sm leading-relaxed">
+      <p>{historical
+        ? "此活動的禮物先前已透過 Instagram 私訊送出，Email 已交給寄信服務。本次開啟不會重新寄送。"
+        : notice ? "禮物尚未完成寄送，請查看下方狀態與提示。"
+          : "已安排透過 Instagram 私訊與 Email 傳送禮物，請稍候。"}</p>
+      {historical && claim.emailMasked && <p className="break-all">先前驗證信箱：{claim.emailMasked}</p>}
+      {notice && <p className="rounded-lg border border-warning/30 bg-warning/5 p-3 font-medium">{notice}</p>}
+      <p className="text-muted">請回原本的 Instagram 私訊，並查看 Email 收件匣及垃圾郵件匣。</p>
+      {claim && <dl className="space-y-2 rounded-lg bg-surface p-3"><div><dt className="font-medium">Instagram 禮物</dt><dd>{deliveryLabel(claim.igStatus, false)}</dd></div><div><dt className="font-medium">Email 禮物</dt><dd>{deliveryLabel(claim.emailStatus, true)}</dd></div></dl>}
+    </div>
+  </>;
 }
 
 function GiftFlow({ mode, token }: { mode: GiftPageMode; token: string }) {
@@ -227,7 +232,6 @@ function GiftFlow({ mode, token }: { mode: GiftPageMode; token: string }) {
     <GiftPageFrame>
       {deliveryReady || confirmed ? (
         <>
-          <h1 className="text-xl font-semibold">Email 已確認</h1>
           <GiftDeliveryStatus claim={claim} />
           {mode === "claim" && claim?.stage === "ready" && (
             <button type="button" className={actionClass} onClick={() => { setLoading(true); setError(null); setReload((value) => value + 1); }}>更新寄送狀態</button>
