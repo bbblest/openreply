@@ -147,6 +147,12 @@ async function main() {
       if (name.endsWith('.toml')) continue;
       await sql.query(readFileSync(path.join(migrations, name, 'migration.sql'), 'utf8'));
     }
+  } else {
+    // This dedicated database predates migration bookkeeping. Preserve prior
+    // evidence rows when upgrading its historical single-claim test schema.
+    const rounds = await sql.query("SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='GiftClaim' AND column_name='round'");
+    if (!rounds.rowCount) await sql.query(readFileSync(path.join(root,
+      'prisma/migrations/20261025220000_gift_claim_rounds/migration.sql'), 'utf8'));
   }
   await prisma.user.create({ data: { id: runId + 'user', email: runId + '@openreply.test' } });
   await prisma.workspace.create({ data: { id: workspaceId, name: 'Isolated integration', ownerId: runId + 'user' } });

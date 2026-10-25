@@ -54,13 +54,28 @@ export async function createGiftClaim(args: { automationId: string; recipientId:
   if (!automation?.isActive || !requireVerifiedEmail(automation)) throw new GiftClaimError("領取活動尚未啟用。", 409);
   const now = new Date();
   const expiresAt = new Date(now.getTime() + DAY);
-  // The unique campaign/IG pair survives duplicate postbacks and process restarts.
-  const claim = await prisma.giftClaim.upsert({
-    where: { automationId_recipientId: { automationId: automation.id, recipientId: args.recipientId } },
-    create: { workspaceId: automation.workspaceId, automationId: automation.id, recipientId: args.recipientId,
-      recipientName: args.recipientName, followConfirmedAt: args.followConfirmedAt, expiresAt },
-    update: { recipientName: args.recipientName, followConfirmedAt: args.followConfirmedAt, expiresAt, nextAttemptAt: now },
-  });
+  const claim = await prisma.$transaction(async (tx) => {
+    // Serialize round creation across workers, including the first-ever claim.
+    // READ COMMITTED takes a fresh snapshot after the lock. Hash collisions only
+    // serialize unrelated pairs; all reads still use the complete identifiers.
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${automation.id}), hashtext(${args.recipientId}))`;
+    const latest = await tx.giftClaim.findFirst({
+      where: { automationId: automation.id, recipientId: args.recipientId }, orderBy: { round: "desc" },
+    });
+    if (!latest || (latest.igStatus === "SENT" && latest.emailStatus === "SENT")) {
+      // Each completed round is immutable history. A new round starts without
+      // an email, verification, contact consent, or successful delivery state.
+      return tx.giftClaim.create({ data: {
+        workspaceId: automation.workspaceId, automationId: automation.id, recipientId: args.recipientId,
+        round: (latest?.round ?? 0) + 1, recipientName: args.recipientName,
+        followConfirmedAt: args.followConfirmedAt, expiresAt,
+      } });
+    }
+    // Resume unfinished work, retaining partial successes and uncertain sends.
+    return tx.giftClaim.update({ where: { id: latest.id }, data: {
+      recipientName: args.recipientName, followConfirmedAt: args.followConfirmedAt, expiresAt, nextAttemptAt: now,
+    } });
+  }, { isolationLevel: "ReadCommitted", maxWait: 10_000, timeout: 10_000 });
   const stage = claim.igStatus === "SENT" && claim.emailStatus === "SENT"
     ? "complete" : claim.emailVerifiedAt ? "verified" : "unverified";
   if (stage === "verified") await enqueueGiftClaim(claim.id);

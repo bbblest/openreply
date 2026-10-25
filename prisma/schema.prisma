@@ -441,6 +441,7 @@ model GiftClaim {
   workspaceId             String
   automationId            String
   recipientId             String
+  round                   Int @default(1)
   recipientName           String?
   followConfirmedAt       DateTime
   expiresAt               DateTime
@@ -470,7 +471,7 @@ model GiftClaim {
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   automation Automation @relation(fields: [automationId], references: [id], onDelete: Cascade)
   contact GiftContact? @relation(fields: [contactId], references: [id], onDelete: SetNull)
-  @@unique([automationId, recipientId])
+  @@unique([automationId, recipientId, round])
   @@index([workspaceId, createdAt])
   @@index([nextAttemptAt])
 }

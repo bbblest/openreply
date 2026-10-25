@@ -2,10 +2,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const { db, followStatus, instagramContext, credentials, mailReady, verificationMail, deliveryMail, relayReady, relaySend, queueAdd, redisEval, instagramSend } = vi.hoisted(() => ({
   db: {
-    giftClaim: { findUnique: vi.fn(), findMany: vi.fn(), upsert: vi.fn(), update: vi.fn(), updateMany: vi.fn() },
+    giftClaim: { findUnique: vi.fn(), findFirst: vi.fn(), findMany: vi.fn(), create: vi.fn(), update: vi.fn(), updateMany: vi.fn() },
     giftContact: { upsert: vi.fn(), updateMany: vi.fn() },
     automation: { findUnique: vi.fn() },
     $transaction: vi.fn(),
+    $executeRaw: vi.fn(),
   },
   followStatus: vi.fn(), instagramContext: vi.fn(), credentials: vi.fn(), mailReady: vi.fn(),
   verificationMail: vi.fn(), deliveryMail: vi.fn(), queueAdd: vi.fn(), redisEval: vi.fn(), instagramSend: vi.fn(),
@@ -43,7 +44,7 @@ const verificationToken = "A".repeat(43);
 
 function freshClaim() {
   return {
-    id: "claim_test", workspaceId: "workspace_test", automationId: "campaign_test", recipientId: "ig_person_test",
+    id: "claim_test", workspaceId: "workspace_test", automationId: "campaign_test", recipientId: "ig_person_test", round: 1,
     recipientName: "測試使用者", followConfirmedAt: new Date(NOW.getTime() - 60_000), expiresAt: new Date(NOW.getTime() + DAY),
     email: "recipient@recipient.test" as string | null, emailVersion: 1,
     verificationTokenHash: giftTokenHash(verificationToken) as string | null,
@@ -121,10 +122,10 @@ beforeEach(() => {
   vi.stubEnv("NEXTAUTH_URL", "https://gift-test.invalid");
   claim = freshClaim();
   db.automation.findUnique.mockImplementation(async () => structuredClone(claim.automation));
-  db.giftClaim.upsert.mockImplementation(async ({ update }: { update: Row }) => {
-    apply(update);
-    return structuredClone(claim);
-  });
+  db.giftClaim.findFirst.mockImplementation(async () => structuredClone(claim));
+  db.giftClaim.create.mockImplementation(async ({ data }: { data: Row }) => ({
+    id: "new_round", email: null, emailVerifiedAt: null, igStatus: "PENDING", emailStatus: "PENDING", ...data,
+  }));
   db.giftClaim.findUnique.mockImplementation(async ({ where }: { where: Row }) => matches(claim as unknown as Row, where) ? structuredClone(claim) : null);
   db.giftClaim.findMany.mockImplementation(async ({ where }: { where: Row }) => matches(claim as unknown as Row, where) ? [{ id: claim.id }] : []);
   db.giftClaim.updateMany.mockImplementation(async ({ where, data }: { where: Row; data: Row }) => {
@@ -159,7 +160,7 @@ describe("returning gift recipients", () => {
       recipientName: claim.recipientName, followConfirmedAt: new Date(NOW) });
   }
 
-  it("returns completed history without enqueueing or changing the original verification and deliveries", async () => {
+  it("starts a fresh unverified round without changing completed history or sending gifts", async () => {
     claim.igStatus = "SENT";
     claim.emailStatus = "SENT";
     claim.igAttempts = 1;
@@ -173,7 +174,9 @@ describe("returning gift recipients", () => {
       igSentAt: claim.igSentAt, emailSentAt: claim.emailSentAt,
     };
     const result = await revisit();
-    expect(result).toMatchObject({ claimId: claim.id, stage: "complete", igStatus: "SENT", emailStatus: "SENT" });
+    expect(result).toMatchObject({ claimId: "new_round", stage: "unverified", igStatus: "PENDING", emailStatus: "PENDING" });
+    expect(db.giftClaim.create).toHaveBeenCalledWith({ data: expect.objectContaining({ round: 2 }) });
+    expect(db.giftClaim.update).not.toHaveBeenCalled();
     expect(result.url).toContain("/gift/claim?token=");
     expect(claim).toMatchObject(history);
     expect(queueAdd).not.toHaveBeenCalled();

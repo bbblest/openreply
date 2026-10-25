@@ -11,3 +11,4 @@ This version has breaking changes — APIs, conventions, and file structure may 
 - 編輯介面與預覽須呈現同一流程，不得把兩段確認誤畫成必要連續步驟。
 - 2026-10-23 使用者選定：確認追蹤 → 必填 Email → 收件人點驗證信確認 → IG 與 Email 都送禮物。啟用 requireEmail 或 REQUIRE_VERIFIED_EMAIL 時，兩個條件都必須完成；寄送前再查追蹤。領取前不顯示 YouTube／禮物目的網址。
 - Email 用於本次領取為必要；後續行銷同意獨立記錄且不預勾，退訂不能被舊領取紀錄恢復。IG／Email 分開記錄寄送結果；不明結果停止自動重寄，已成功的通道不因另一通道失敗而重送。
+- 2026-10-26 本人改定：所有人完成一輪後都可重新領取，每輪重新填 Email、點新驗證信，再由 IG 與 Email 各送一份。保留每輪舊紀錄；未完成輪的連按／重試沿用同輪，部分成功與結果不明不得清空重送。新輪不得繼承舊輪驗證或行銷同意。
