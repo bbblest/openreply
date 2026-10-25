@@ -996,6 +996,20 @@ async function processPostback(job: Job<ProcessPostbackJob>): Promise<void> {
               await scheduleFollowRecovery(delay);
               logFollowCheck(operationId, "pending_watchdog_repaired");
             }
+          } else if (begin === "duplicate_click") {
+            // A distinct real tap gets its own durable response while sharing
+            // the active lookup. Do not assert false before that lookup ends,
+            // start another API call, or release the other execution's lease.
+            await sendPostbackOnce({
+              operationId,
+              send: () => boundedFollowSend(() => sendDirectMessageWithButton({
+                context: accessToken, instagramAccountId, userId,
+                text: SAFE_FOLLOW_MESSAGES.checkInProgress,
+                buttonTitle: SAFE_FOLLOW_MESSAGES.button,
+                payload: `followcheck:${automation.id}`,
+              })),
+            });
+            logFollowCheck(operationId, "busy_tap_replied");
           }
           logFollowCheck(operationId, begin);
           return;
@@ -1054,16 +1068,13 @@ async function processPostback(job: Job<ProcessPostbackJob>): Promise<void> {
       }
       logFollowCheck(operationId, outcome);
       if (outcome !== "following") {
-        const text = outcome === "cooldown" ? SAFE_FOLLOW_MESSAGES.cooldown
-          : outcome === "unknown" ? SAFE_FOLLOW_MESSAGES.unknown
+        const text = outcome === "unknown" ? SAFE_FOLLOW_MESSAGES.unknown
           : shouldUseSafeFollowMessages(automation) ? SAFE_FOLLOW_MESSAGES.retryPrompt
           : renderMessageWithoutLink({ message: automation.followPromptMessage || SAFE_FOLLOW_MESSAGES.retryPrompt, commenterName });
         await sendPostbackOnce({
           operationId,
           isCurrent: canSendResult,
-          send: () => boundedFollowSend(() => outcome === "cooldown"
-            ? sendDirectMessage({ context: accessToken, instagramAccountId, userId, message: text })
-            : sendDirectMessageWithButton({
+          send: () => boundedFollowSend(() => sendDirectMessageWithButton({
               context: accessToken, instagramAccountId, userId, text,
               buttonTitle: shouldUseSafeFollowMessages(automation) ? SAFE_FOLLOW_MESSAGES.button
                 : automation.followPromptButtonLabel || SAFE_FOLLOW_MESSAGES.button,
@@ -1074,7 +1085,7 @@ async function processPostback(job: Job<ProcessPostbackJob>): Promise<void> {
           workspaceId: automation.workspaceId, source: "WORKER", level: "INFO",
           message: "Follow gate rejected a button tap",
           payload: { automationId: automation.id, userId, operationId, attempt: attempts,
-            followStatus: outcome === "cooldown" ? "not_following" : outcome, cooldown: outcome === "cooldown" },
+            followStatus: outcome },
         } }).catch(() => {});
         return;
       }

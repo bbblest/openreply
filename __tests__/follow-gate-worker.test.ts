@@ -89,47 +89,79 @@ beforeEach(() => {
 afterEach(() => { vi.useRealTimers(); vi.unstubAllEnvs(); vi.restoreAllMocks(); });
 
 describe("follow gate concurrency and bounded completion (real worker + state + retry; mock transports)", () => {
-  it("10 presses in 1.8s crossing the old bucket: one read, one result, 9 ignored clicks", async () => {
+  it("10 presses in 1.8s: one active lookup, one result and 9 distinct tap replies", async () => {
     const logs = vi.spyOn(console, "info");
     m.read.mockImplementation(() => new Promise(resolve => setTimeout(() => resolve(false), 4_000)));
     const tasks = [run(tap("tap0"))];
     for (let i = 1; i < 10; i++) { await vi.advanceTimersByTimeAsync(200); tasks.push(run(tap(`tap${i}`))); }
     await vi.advanceTimersByTimeAsync(1200); expect(m.text).toHaveBeenCalledTimes(1);
     await vi.advanceTimersByTimeAsync(1000); await Promise.all(tasks);
-    expect(m.read).toHaveBeenCalledTimes(1); expect(m.button).toHaveBeenCalledTimes(1);
+    expect(m.read).toHaveBeenCalledTimes(1); expect(m.button).toHaveBeenCalledTimes(10);
+    expect(m.button.mock.calls.filter(([args]) => args.text === SAFE_FOLLOW_MESSAGES.checkInProgress)).toHaveLength(9);
+    expect(m.button.mock.calls.filter(([args]) => args.text === SAFE_FOLLOW_MESSAGES.retryPrompt)).toHaveLength(1);
     expect(m.claim).not.toHaveBeenCalled(); expect(m.add).toHaveBeenCalledTimes(1);
     expect(logs.mock.calls.filter(([, entry]) => String(entry).includes('"duplicate_click"'))).toHaveLength(9);
     expect(state().state).toBe("prompted");
     // The same processor remains usable for another person (no process crash).
     await settle(run(tap("other", { userId: "other-person" })));
-    expect(m.button).toHaveBeenCalledTimes(2);
+    expect(m.button).toHaveBeenCalledTimes(11);
   });
 
-  it("collapses simultaneous workers and fast sequential taps without emitting checking", async () => {
+  it("shares concurrent lookup but replies to each tap; a subsequent tap checks again immediately", async () => {
     await Promise.all(Array.from({ length: 10 }, (_, i) => run(tap(`parallel${i}`))));
-    expect(m.read).toHaveBeenCalledTimes(1); expect(m.button).toHaveBeenCalledTimes(1);
+    expect(m.read).toHaveBeenCalledTimes(1); expect(m.button).toHaveBeenCalledTimes(10);
     expect(m.text).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(200); await run(tap("fast-again"));
-    expect(m.read).toHaveBeenCalledTimes(1);
+    expect(m.read).toHaveBeenCalledTimes(2); expect(m.button).toHaveBeenCalledTimes(11);
   });
 
-  it("queued clicks keep their source time even if processed after the first check", async () => {
+  it("every queued distinct click gets a reply even when its event time is within the former debounce", async () => {
     const queued = Array.from({ length: 10 }, (_, i) => tap(`queued${i}`, { eventAt: Date.now() + i * 150 }));
     await run(queued[0]); await vi.advanceTimersByTimeAsync(20_000);
     for (const job of queued.slice(1)) await run(job);
-    expect(m.read).toHaveBeenCalledTimes(1);
-    expect(m.button).toHaveBeenCalledTimes(1);
+    expect(m.read).toHaveBeenCalledTimes(10);
+    expect(m.button).toHaveBeenCalledTimes(10);
   });
 
-  it("five false results in a rolling 10min window cool down once; sixth silent; expiry recovers", async () => {
-    for (let i = 0; i < 5; i++) { await run(tap(`false${i}`)); await vi.advanceTimersByTimeAsync(16_000); }
-    expect(m.read).toHaveBeenCalledTimes(5); expect(m.button).toHaveBeenCalledTimes(4);
-    expect(m.text).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ message: SAFE_FOLLOW_MESSAGES.cooldown }));
-    expect(state().state).toBe("cooldown");
-    await run(tap("sixth")); expect(m.read).toHaveBeenCalledTimes(5);
-    await vi.advanceTimersByTimeAsync(30 * 60_000);
-    await run(tap("after-cooldown")); expect(m.read).toHaveBeenCalledTimes(6);
-    expect(state().attemptCount).toBe(1);
+  it("six rapid false results each explain the gift condition; following then works immediately", async () => {
+    for (let i = 0; i < 6; i++) { await run(tap(`false${i}`)); await vi.advanceTimersByTimeAsync(200); }
+    expect(m.read).toHaveBeenCalledTimes(6); expect(m.button).toHaveBeenCalledTimes(6);
+    for (const [args] of m.button.mock.calls) {
+      expect(args.text).toBe(SAFE_FOLLOW_MESSAGES.retryPrompt);
+      expect(args.text).toContain("還沒確認到你的追蹤"); expect(args.text).toContain("禮物");
+    }
+    expect(state().state).toBe("prompted"); expect(state().cooldownUntil).toBe(0);
+    expect(m.claim).not.toHaveBeenCalled();
+    m.read.mockResolvedValueOnce(true); await run(tap("followed-now"));
+    expect(m.read).toHaveBeenCalledTimes(7); expect(m.claim).toHaveBeenCalledTimes(1);
+  });
+
+  it("existing production cooldown resumes on a new tap without deleting state or dedupe", async () => {
+    const old = tap("before-rollout"); await run(old);
+    redis.values.set(key, JSON.stringify({ ...state(), state: "cooldown", cooldownUntil: Date.now() + 1_800_000 }));
+    await run(old); expect(m.button).toHaveBeenCalledTimes(1);
+    await run(tap("after-rollout")); expect(m.read).toHaveBeenCalledTimes(2);
+    expect(m.button).toHaveBeenCalledTimes(2); expect(state().state).toBe("prompted");
+  });
+
+  it("redelivery of an overlapping tap replies once without disrupting the original lookup", async () => {
+    m.read.mockImplementationOnce(() => new Promise(resolve => setTimeout(() => resolve(false), 4_000)));
+    const original = run(tap("still-checking")); await vi.advanceTimersByTimeAsync(100);
+    const busy = tap("real-busy-click"); await Promise.all([run(busy), run(busy)]);
+    expect(m.button).toHaveBeenCalledTimes(1); expect(state().state).toBe("checking");
+    await vi.advanceTimersByTimeAsync(3900); await original;
+    redis.values.clear(); await run(busy);
+    expect(m.button).toHaveBeenCalledTimes(2); expect(m.read).toHaveBeenCalledTimes(1);
+  });
+
+  it("a failed busy reply never releases the active check and an uncertain send is not repeated", async () => {
+    m.read.mockImplementationOnce(() => new Promise(resolve => setTimeout(() => resolve(false), 4_000)));
+    const original = run(tap("active-owner")); await vi.advanceTimersByTimeAsync(100);
+    m.button.mockRejectedValueOnce(new Error("unknown delivery"));
+    const busy = tap("busy-send-error"); await expect(run(busy)).rejects.toThrow("unconfirmed");
+    expect(state().state).toBe("checking"); await run(busy);
+    await vi.advanceTimersByTimeAsync(3900); await original;
+    expect(m.button).toHaveBeenCalledTimes(2); expect(m.read).toHaveBeenCalledTimes(1);
   });
 
   it("rolling window drops old failures rather than resetting all at a fixed boundary", async () => {
@@ -152,13 +184,12 @@ describe("follow gate concurrency and bounded completion (real worker + state + 
     expect(state().unknownCount).toBe(2); expect(m.claim).not.toHaveBeenCalled();
   });
 
-  it("retry can succeed, success is throttled 60s but never treated as permanent proof", async () => {
+  it("retry can succeed; a new tap checks current follow status even within 60s", async () => {
     m.read.mockRejectedValueOnce(new Error("test-only")).mockResolvedValueOnce(true);
     await settle(run(tap("retry")));
     expect(m.claim).toHaveBeenCalledTimes(1); expect(m.link).toHaveBeenCalledTimes(1);
     expect(m.text).not.toHaveBeenCalled(); expect(state().state).toBe("followed");
-    await run(tap("repeat")); expect(m.read).toHaveBeenCalledTimes(2);
-    await vi.advanceTimersByTimeAsync(60_000); m.read.mockResolvedValue(false);
+    await vi.advanceTimersByTimeAsync(200); m.read.mockResolvedValue(false);
     await run(tap("unfollowed")); expect(m.read).toHaveBeenCalledTimes(3);
     expect(m.claim).toHaveBeenCalledTimes(1); expect(m.button).toHaveBeenCalledTimes(1);
   });

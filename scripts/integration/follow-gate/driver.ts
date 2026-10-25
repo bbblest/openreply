@@ -11,7 +11,7 @@ import { getDMQueue, getRedisConnection, type ProcessPostbackJob } from '@/lib/q
 import { followGateKey, type FollowGateState } from '@/lib/queue/follow-gate-state';
 import { SAFE_FOLLOW_MESSAGES } from '@/lib/instagram/follow-policy';
 
-type SinkEvent = { kind: string; user: string; at: number; pid: number; body: Record<string, unknown>; aborted?: boolean };
+type SinkEvent = { kind: string; user: string; at: number; pid: number; body: Record<string, unknown>; aborted?: boolean; endedAt?: number };
 type Behavior = { follows?: boolean | null; delay?: number; hang?: boolean; blockResult?: boolean };
 type WorkerRecord = { child: ChildProcess; ready: boolean; auto: boolean; stopped: boolean };
 type CaseResult = { name: string; status: 'PASS' | 'FAIL'; durationMs: number; detail: unknown };
@@ -42,6 +42,12 @@ async function until(check: () => unknown | Promise<unknown>, description: strin
   throw new Error('Timed out: ' + description);
 }
 function events(user: string, kind?: string) { return sinkEvents.filter(e => e.user === user && (!kind || e.kind === kind)); }
+function assertSerialReads(user: string) {
+  const reads = events(user, 'read');
+  assert(reads.length > 0);
+  reads.slice(1).forEach((e, i) => assert(reads[i].endedAt !== undefined && reads[i].endedAt! <= e.at, 'No overlapping lookup for one user'));
+  return reads.length;
+}
 function key(user: string) { return followGateKey(accountId, campaignId, user); }
 async function state(user: string): Promise<FollowGateState | null> {
   const raw = await redis.get(key(user));
@@ -118,6 +124,7 @@ const server = createServer(async (request, response) => {
     if ((kind === 'read' && b.hang) || (kind === 'button' && b.blockResult)) return;
     if (kind === 'read' && b.delay) await delay(b.delay);
     if (!response.destroyed) {
+      event.endedAt = Date.now();
       response.writeHead(200, { 'content-type': 'application/json' });
       response.end(JSON.stringify(kind === 'read' ? { follows: b.follows ?? false } : { message_id: runId + sinkEvents.length }));
     }
@@ -157,19 +164,28 @@ async function main() {
 
   await caseRun('4 程序：同人 1000 次連按', async () => {
     const user = runId + 'burst'; behaviors.set(user, { follows: false, delay: 4000 });
-    const start = Date.now(), duplicateBefore = outcomes.duplicate_click ?? 0;
+    const start = Date.now();
     const jobs = await queue.addBulk(Array.from({ length: 1000 }, (_, i) => ({ name: 'process-postback',
       data: { accountConnectionId: accountId, instagramAccountId: ownerId, userId: user,
         payload: 'followcheck:' + campaignId, mid: 'burst-' + i, eventAt: start + i },
       opts: { jobId: runId + '-burst-' + i, attempts: 1, removeOnComplete: false } })));
     await terminal(user);
     await until(async () => (await Promise.all(jobs.map(j => j.getState()))).every(s => s === 'completed'), '1000 jobs complete');
-    assert.equal(events(user, 'read').length, 1); assert.equal(events(user, 'button').length, 1);
-    assert.equal(events(user, 'text').length, 1); assert.equal((outcomes.duplicate_click ?? 0) - duplicateBefore, 999);
+    const reads = assertSerialReads(user);
+    assert.equal(events(user, 'button').length, 1000);
+    const pending = events(user, 'button').filter(e => e.body.text === SAFE_FOLLOW_MESSAGES.checkInProgress).length;
+    assert.equal(pending + reads, 1000);
+    assert(events(user, 'button').every(e => [SAFE_FOLLOW_MESSAGES.checkInProgress, SAFE_FOLLOW_MESSAGES.retryPrompt].includes(e.body.text as never)));
     assert.equal(await prisma.giftClaim.count({ where: { automationId: campaignId, recipientId: user } }), 0);
     const pids = new Set(workerEvents.filter(e => e.type === 'completed' && e.id?.startsWith(runId + '-burst-')).map(e => e.pid));
     assert.equal(pids.size, 4);
-    return { events: 1000, processes: pids.size, reads: 1, acknowledgements: 1, results: 1, ignored: 999, elapsedMs: Date.now() - start };
+    // Replay exactly the same Meta events with different queue ids: PG dedupe
+    // must still prevent additional responses after the entire burst settled.
+    const replays = await queue.addBulk(jobs.map((job, i) => ({ name: job.name, data: job.data,
+      opts: { jobId: runId + '-replay-' + i, attempts: 1, removeOnComplete: false } })));
+    await until(async () => (await Promise.all(replays.map(j => j.getState()))).every(s => s === 'completed'), '1000 replay jobs complete');
+    assert.equal(events(user, 'button').length, 1000); assert.equal(events(user, 'read').length, reads);
+    return { events: 1000, processes: pids.size, reads, replies: 1000, pendingReplies: pending, replayedWithoutResend: 1000, elapsedMs: Date.now() - start };
   });
 
   await caseRun('4 程序：100 人各按 10 次，50 人追蹤／50 人未追蹤', async () => {
@@ -183,11 +199,15 @@ async function main() {
         opts: { jobId: runId + '-people-' + i, attempts: 1, removeOnComplete: false } };
     }));
     await until(async () => (await Promise.all(jobs.map(j => j.getState()))).every(s => s === 'completed'), '1000 mixed jobs complete', 60_000);
-    users.forEach((u, i) => { assert.equal(events(u, 'read').length, 1); assert.equal(events(u, i % 2 === 0 ? 'link' : 'button').length, 1); });
+    users.forEach((u, i) => {
+      assertSerialReads(u);
+      assert.equal(events(u, 'link').length + events(u, 'button').length, 10);
+      if (i % 2 !== 0) assert.equal(events(u, 'link').length, 0);
+    });
     assert.equal(await prisma.giftClaim.count({ where: { automationId: campaignId } }), 50);
     assert.equal(await prisma.giftClaim.count({ where: { automationId: campaignId, OR: [{ emailVerifiedAt: { not: null } }, { igSentAt: { not: null } }, { emailSentAt: { not: null } }] } }), 0);
     assert.equal(sinkEvents.filter(e => e.kind.includes('email')).length, 0);
-    return { people: 100, events: 1000, reads: 100, unverifiedClaims: 50, gifts: 0, elapsedMs: Date.now() - start };
+    return { people: 100, events: 1000, reads: users.reduce((n, u) => n + events(u, 'read').length, 0), replies: 1000, unverifiedClaims: 50, gifts: 0, elapsedMs: Date.now() - start };
   });
 
   await caseRun('20 人同時 API 不回應：真實 8＋2＋8 秒逾時', async () => {
@@ -206,18 +226,23 @@ async function main() {
     return { people: 20, abortedRequests: 40, terminalMessages: 20, minimumMs: Math.min(...durations), maximumMs: Math.max(...durations) };
   });
 
-  await caseRun('真實時間五次未追蹤，跨程序冷卻', async () => {
-    const user = runId + 'cooldown';
-    for (let i = 0; i < 5; i++) {
-      await tap(user, 'cooldown-' + i);
-      if (i < 4) { await terminal(user, i + 1); await delay(15_100); }
-      else await until(() => events(user, 'text').some(e => e.body.message === SAFE_FOLLOW_MESSAGES.cooldown), 'cooldown response');
+  await caseRun('連續六次未追蹤每次回覆，隨後追蹤立即查核', async () => {
+    const user = runId + 'repeat';
+    for (let i = 0; i < 6; i++) {
+      const job = await tap(user, 'repeat-' + i);
+      await until(async () => await job.getState() === 'completed', 'tap completed');
+      await terminal(user, i + 1);
     }
-    await tap(user, 'cooldown-sixth'); await delay(1000);
-    assert.equal(events(user, 'read').length, 5); assert.equal(events(user, 'button').length, 4);
-    assert.equal(events(user, 'text').length, 1); assert.equal((await state(user))?.state, 'cooldown');
-    assert((await state(user))!.cooldownUntil - Date.now() > 1_790_000);
-    return { reads: 5, retries: 4, cooldown: 1, sixthSilent: true, configuredCooldownMs: 1_800_000 };
+    assert.equal(events(user, 'read').length, 6); assert.equal(events(user, 'button').length, 6);
+    assert(events(user, 'button').every(e => e.body.text === SAFE_FOLLOW_MESSAGES.retryPrompt));
+    assert.equal((await state(user))?.state, 'prompted');
+    behaviors.set(user, { follows: true });
+    const job = await tap(user, 'now-following');
+    await until(async () => await job.getState() === 'completed', 'following tap completed');
+    assert.equal(events(user, 'read').length, 7); assert.equal(events(user, 'link').length, 1);
+    const claim = await prisma.giftClaim.findFirstOrThrow({ where: { automationId: campaignId, recipientId: user } });
+    assert.equal(claim.emailVerifiedAt, null); assert.equal(claim.igSentAt, null); assert.equal(claim.emailSentAt, null);
+    return { falseChecks: 6, negativeReplies: 6, immediateFollowCheck: true, unverifiedClaims: 1, gifts: 0 };
   });
   await stopAll();
 

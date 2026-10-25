@@ -2,7 +2,6 @@ import { createHash } from "node:crypto";
 import { getRedisConnection } from "./client";
 
 export const FOLLOW_CHECK_LEASE_MS = 45_000;
-export const FOLLOW_DUPLICATE_MS = 15_000;
 const STATE_TTL_MS = 24 * 60 * 60_000;
 export type FollowGateAction = "begin" | "current" | "complete" | "release" | "cancel" | "expire";
 export type FollowGateState = {
@@ -51,18 +50,17 @@ export function nextFollowGateState(
     s.unknownCount = 0;
     s.failures = s.failures.filter(t => t > now - 600_000).concat(now);
     s.attemptCount = s.failures.length; s.attemptWindowStart = s.failures[0];
-    if (s.attemptCount >= 5) { s.state = "cooldown"; s.cooldownUntil = now + 1_800_000; return "cooldown"; }
+    s.cooldownUntil = 0;
     return "not_following";
   }
   if (action === "begin") {
     if (s.currentCheckId === id) return result("duplicate_event");
-    if (s.state === "cooldown" && now < s.cooldownUntil) return result("cooldown");
     if ((s.state === "checking" || s.settling) && now < s.deadline) return result("duplicate_click");
-    if (s.lastEventAt > 0 && Number(value) <= s.lastEventAt + FOLLOW_DUPLICATE_MS) return result("duplicate_click");
-    if (s.lastNextStepSentAt > 0 && now - s.lastNextStepSentAt < 60_000) return result("next_step_throttled");
+    // A new tap always gets feedback. Only overlapping checks share a lease;
+    // elapsed-time debouncing must not hide another real user action. Old
+    // cooldown states are accepted here so rollout needs no production reset.
     if (s.state === "cooldown") { s.failures = []; s.attemptCount = 0; s.cooldownUntil = 0; }
-    // 15s is the click debounce. The 45s lease covers 8+2+8s API retries plus
-    // acknowledgement/result delivery, so the second retry cannot be displaced.
+    // The 45s lease covers 8+2+8s API retries plus result delivery.
     s.state = "checking"; s.currentCheckId = id; s.checkStartedAt = now;
     s.deadline = now + FOLLOW_CHECK_LEASE_MS; s.lastEventAt = Number(value); s.settling = false;
     return result("started");
